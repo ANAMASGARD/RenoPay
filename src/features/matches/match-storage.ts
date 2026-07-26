@@ -4,6 +4,7 @@ import type { PublishedMatch } from '@/features/matches/registry';
 import type { TicketRecord } from '@/features/tickets/ticket-types';
 
 const MATCH_CACHE_KEY = '@renopay/published_matches_v1';
+const LAST_SEEN_BLOCK_KEY = '@renopay/match_discovery_last_block_v1';
 
 const DEMO_STADIUMS = [
   ['Sawai Mansingh Stadium', 26.9124, 75.7873],
@@ -40,6 +41,22 @@ export async function loadCachedMatches(): Promise<PublishedMatch[]> {
 
 export async function saveCachedMatches(matches: PublishedMatch[]): Promise<void> {
   await AsyncStorage.setItem(MATCH_CACHE_KEY, JSON.stringify(matches));
+}
+
+export async function loadLastSeenBlock(): Promise<number | null> {
+  try {
+    const raw = await AsyncStorage.getItem(LAST_SEEN_BLOCK_KEY);
+    if (!raw) return null;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveLastSeenBlock(block: number): Promise<void> {
+  if (!Number.isFinite(block) || block < 0) return;
+  await AsyncStorage.setItem(LAST_SEEN_BLOCK_KEY, String(block));
 }
 
 /** Rehydrates a map marker from a locally persisted ticket while RPC indexing catches up. */

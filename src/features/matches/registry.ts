@@ -42,6 +42,49 @@ const ERC20_ABI = [{ type: 'function', name: 'approve', stateMutability: 'nonpay
 const registryAddress = process.env.EXPO_PUBLIC_MATCH_REGISTRY_ADDRESS;
 const deploymentBlock = Number.parseInt(process.env.EXPO_PUBLIC_MATCH_REGISTRY_DEPLOYMENT_BLOCK ?? '0', 10);
 
+export const INCREMENTAL_BLOCK_WINDOW = 3_000;
+export const INCREMENTAL_BLOCK_OVERLAP = 64;
+const LOG_CHUNK_SIZE = 2_000;
+const LOG_BATCH_PARALLELISM = 6;
+const RPC_RACE_TIMEOUT_MS = 4_500;
+
+export type FetchPublishedMatchesOptions = {
+  mode?: 'full' | 'incremental';
+  fromBlock?: number;
+};
+
+let discoveryLastSeenBlock: number | null = null;
+
+export function getDiscoveryLastSeenBlock(): number | null {
+  return discoveryLastSeenBlock;
+}
+
+export function setDiscoveryLastSeenBlock(block: number | null): void {
+  discoveryLastSeenBlock = block != null && Number.isFinite(block) && block >= 0 ? block : null;
+}
+
+export function computeIncrementalFromBlock(params: {
+  latest: number;
+  deploymentBlock?: number;
+  lastSeenBlock?: number | null;
+  windowSize?: number;
+  overlap?: number;
+}): number {
+  const configuredDeployment = params.deploymentBlock ?? deploymentBlock;
+  const deployment = Number.isFinite(configuredDeployment) ? configuredDeployment : 0;
+  const windowSize = params.windowSize ?? INCREMENTAL_BLOCK_WINDOW;
+  const overlap = params.overlap ?? INCREMENTAL_BLOCK_OVERLAP;
+  const recentWindowStart = Math.max(0, params.latest - windowSize);
+  const overlapStart = params.lastSeenBlock != null
+    ? Math.max(0, params.lastSeenBlock - overlap)
+    : recentWindowStart;
+  return Math.max(deployment, recentWindowStart, overlapStart);
+}
+
+function getConfiguredDeploymentBlock(): number {
+  return Number.isFinite(deploymentBlock) ? deploymentBlock : 0;
+}
+
 export type PublishedMatch = {
   matchId: string;
   saleAddress: string;
@@ -95,7 +138,7 @@ function atomicToUsdt(value: bigint): string {
 }
 
 async function rpc<T>(method: string, params: unknown[]): Promise<T> {
-  const endpoints = [...new Set([getSepoliaRpcUrl(), 'https://rpc.sepolia.org', 'https://sepolia.drpc.org'])];
+  const endpoints = [...new Set([getSepoliaRpcUrl(), 'https://rpc.sepolia.org', 'https://sepolia.drpc.org', 'https://ethereum-sepolia-rpc.publicnode.com'])];
   let lastError: unknown;
   for (const endpoint of endpoints) {
     try {
@@ -110,27 +153,36 @@ async function rpc<T>(method: string, params: unknown[]): Promise<T> {
   throw lastError instanceof Error ? lastError : new Error(`RPC ${method} failed`);
 }
 
-export async function fetchPublishedMatches(): Promise<PublishedMatch[]> {
-  if (!isMatchRegistryConfigured()) return [];
-  const topic = keccak256(toHex('MatchPosted(bytes32,address,address,string,string,string,string,int32,int32,uint64,uint128,uint32)'));
-  const latest = Number.parseInt(await rpc<string>('eth_blockNumber', []), 16);
-  const configuredFrom = Number.isFinite(deploymentBlock) ? deploymentBlock : 0;
-  // If a stale deployment block is ahead of the provider's current head, still
-  // search a recent window instead of silently returning zero markers.
-  const from = configuredFrom <= latest ? configuredFrom : Math.max(0, latest - 250_000);
-  const ranges: [number, number][] = [];
-  for (let cursor = from; cursor <= latest; cursor += 2_000) {
-    ranges.push([cursor, Math.min(cursor + 1_999, latest)]);
+async function rpcRace<T>(method: string, params: unknown[]): Promise<T> {
+  const endpoints = [...new Set([getSepoliaRpcUrl(), 'https://ethereum-sepolia-rpc.publicnode.com', 'https://sepolia.drpc.org', 'https://rpc.sepolia.org'])];
+  const attempts = endpoints.map(async (endpoint) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), RPC_RACE_TIMEOUT_MS);
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
+        signal: controller.signal,
+      });
+      const body = await response.json() as { result?: T; error?: { message?: string } };
+      if (body.error || body.result === undefined) throw new Error(body.error?.message ?? `RPC ${method} failed`);
+      return body.result;
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+  const settled = await Promise.allSettled(attempts);
+  for (const result of settled) {
+    if (result.status === 'fulfilled') return result.value;
   }
-  const logs: { topics: string[]; data: string }[] = [];
-  // Public Sepolia RPCs are much faster with a small bounded amount of parallelism
-  // than with hundreds of serial 2k-block requests.
-  for (let index = 0; index < ranges.length; index += 6) {
-    const batch = await Promise.all(ranges.slice(index, index + 6).map(([start, end]) =>
-      rpc<typeof logs>('eth_getLogs', [{ address: getMatchRegistryAddress(), fromBlock: `0x${start.toString(16)}`, toBlock: `0x${end.toString(16)}`, topics: [topic] }]),
-    ));
-    logs.push(...batch.flat());
-  }
+  const firstError = settled.find((result) => result.status === 'rejected');
+  throw firstError && firstError.status === 'rejected' && firstError.reason instanceof Error
+    ? firstError.reason
+    : new Error(`RPC ${method} failed`);
+}
+
+function decodeMatchPostedLogs(logs: { topics: string[]; data: string }[]): PublishedMatch[] {
   return logs.flatMap((log) => {
     try {
       const decoded = decodeEventLog({ abi: MATCH_REGISTRY_ABI, data: log.data as `0x${string}`, topics: log.topics as [`0x${string}`, ...`0x${string}`[]] });
@@ -144,6 +196,42 @@ export async function fetchPublishedMatches(): Promise<PublishedMatch[]> {
       }];
     } catch { return []; }
   });
+}
+
+async function fetchMatchPostedLogs(from: number, latest: number): Promise<PublishedMatch[]> {
+  const topic = keccak256(toHex('MatchPosted(bytes32,address,address,string,string,string,string,int32,int32,uint64,uint128,uint32)'));
+  const ranges: [number, number][] = [];
+  for (let cursor = from; cursor <= latest; cursor += LOG_CHUNK_SIZE) {
+    ranges.push([cursor, Math.min(cursor + LOG_CHUNK_SIZE - 1, latest)]);
+  }
+  const logs: { topics: string[]; data: string }[] = [];
+  for (let index = 0; index < ranges.length; index += LOG_BATCH_PARALLELISM) {
+    const batch = await Promise.all(ranges.slice(index, index + LOG_BATCH_PARALLELISM).map(([start, end]) =>
+      rpcRace<typeof logs>('eth_getLogs', [{ address: getMatchRegistryAddress(), fromBlock: `0x${start.toString(16)}`, toBlock: `0x${end.toString(16)}`, topics: [topic] }]),
+    ));
+    logs.push(...batch.flat());
+  }
+  return decodeMatchPostedLogs(logs);
+}
+
+export async function fetchPublishedMatches(options: FetchPublishedMatchesOptions = {}): Promise<PublishedMatch[]> {
+  if (!isMatchRegistryConfigured()) return [];
+  const mode = options.mode ?? 'full';
+  const latest = Number.parseInt(await rpcRace<string>('eth_blockNumber', []), 16);
+  const configuredFrom = getConfiguredDeploymentBlock();
+  const from = mode === 'incremental'
+    ? Math.max(
+      options.fromBlock ?? computeIncrementalFromBlock({
+        latest,
+        deploymentBlock: configuredFrom,
+        lastSeenBlock: discoveryLastSeenBlock,
+      }),
+      configuredFrom <= latest ? configuredFrom : Math.max(0, latest - 250_000),
+    )
+    : (configuredFrom <= latest ? configuredFrom : Math.max(0, latest - 250_000));
+  const matches = await fetchMatchPostedLogs(from, latest);
+  discoveryLastSeenBlock = latest;
+  return matches;
 }
 
 export async function fetchRemainingCapacity(saleAddress: string): Promise<number> {
@@ -186,15 +274,7 @@ export async function publishMatch(extension: EvmAccountExtension, draft: Parame
 }
 
 function decodeMatchLogs(logs: { topics: string[]; data: string }[]): PublishedMatch | null {
-  const match = logs.flatMap((log) => {
-    try {
-      const decoded = decodeEventLog({ abi: MATCH_REGISTRY_ABI, data: log.data as `0x${string}`, topics: log.topics as [`0x${string}`, ...`0x${string}`[]] });
-      if (decoded.eventName !== 'MatchPosted') return [];
-      const args = decoded.args as Record<string, unknown>;
-      return [{ matchId: String(args.matchId), saleAddress: String(args.sale), clubAddress: String(args.club), eventName: String(args.eventName), homeTeam: String(args.homeTeam), awayTeam: String(args.awayTeam), venue: String(args.venue), location: { latitude: Number(args.latitudeE6) / 1_000_000, longitude: Number(args.longitudeE6) / 1_000_000 }, startAt: new Date(Number(args.startAt) * 1000).toISOString(), priceAtomic: String(args.priceAtomic), priceUsdt: atomicToUsdt(BigInt(args.priceAtomic as bigint)), capacity: Number(args.capacity) }];
-    } catch { return []; }
-  });
-  return match[0] ?? null;
+  return decodeMatchPostedLogs(logs)[0] ?? null;
 }
 
 function logsFromReceipt(value: unknown): { topics: string[]; data: string }[] {

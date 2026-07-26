@@ -17,8 +17,8 @@ import {
   parseMapboxPlaceSearchResults,
   type MapboxPlaceSearchResult,
 } from '@/features/map/map-utils';
-import { fetchPublishedMatches, fetchRemainingCapacity, getPublishedMatchFromTransaction, isMatchRegistryConfigured, type EvmAccountExtension, type PublishedMatch } from '@/features/matches/registry';
-import { loadCachedMatches, matchFromTicket, mergeMatches, saveCachedMatches } from '@/features/matches/match-storage';
+import { fetchPublishedMatches, fetchRemainingCapacity, getDiscoveryLastSeenBlock, getPublishedMatchFromTransaction, isMatchRegistryConfigured, setDiscoveryLastSeenBlock, type EvmAccountExtension, type PublishedMatch } from '@/features/matches/registry';
+import { loadCachedMatches, loadLastSeenBlock, matchFromTicket, mergeMatches, saveCachedMatches, saveLastSeenBlock } from '@/features/matches/match-storage';
 import { loadTickets, upsertTicket } from '@/features/tickets/ticket-storage';
 import { useAccount } from '@/features/wdk/wdk-hooks';
 
@@ -27,6 +27,8 @@ const mapboxAccessToken = process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN;
 if (hasMapboxAccessToken(mapboxAccessToken)) {
   void setAccessToken(mapboxAccessToken!.trim());
 }
+
+const MAP_POLL_INTERVAL_MS = 2_000;
 
 type MapStatus =
   | { kind: 'loading'; message: string }
@@ -47,56 +49,133 @@ export default function MapScreen() {
   const [isSearching, setIsSearching] = useState(false);
   const [matches, setMatches] = useState<PublishedMatch[]>([]);
   const [selectedMatch, setSelectedMatch] = useState<PublishedMatch | null>(null);
+  const refreshingRef = useRef(false);
+  const selectedMatchRef = useRef<PublishedMatch | null>(null);
   const account = useAccount({ network: 'ethereum', accountIndex: 0 }) as unknown as { address: string | null; extension: <T extends object>() => T };
   const { extension } = account;
   const extensionRef = useRef(extension);
   extensionRef.current = extension;
 
+  extensionRef.current = extension;
+  selectedMatchRef.current = selectedMatch;
+
   const hasToken = hasMapboxAccessToken(mapboxAccessToken);
 
-  const refreshMatches = useCallback(async () => {
-    const tickets = await loadTickets();
-    const cached = await loadCachedMatches();
-    const localMatches = tickets.map(matchFromTicket).filter((match): match is PublishedMatch => Boolean(match));
-    // Render durable local/cached pins before any RPC or bundler request.
-    // A slow UserOperation lookup must never leave the map visually empty.
-    const durableFallback = mergeMatches(cached, localMatches);
-    if (durableFallback.length > 0) setMatches(durableFallback);
-
-    const pendingTickets = tickets.filter((ticket) => ticket.registryTxHash && (!ticket.matchId || !ticket.matchSaleAddress));
-    const resolvedPending = await Promise.all(pendingTickets.map(async (ticket) => {
-      try {
-        const resolved = await Promise.race([
-          getPublishedMatchFromTransaction(ticket.registryTxHash!, extensionRef.current<EvmAccountExtension>()),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
-        ]);
-        if (resolved) {
-          await upsertTicket({ ...ticket, matchId: resolved.matchId, matchSaleAddress: resolved.saleAddress, location: resolved.location, updatedAt: new Date().toISOString() });
-          return resolved;
-        }
-      } catch {
-        // Keep the local pin visible while the UserOperation propagates.
-      }
-      return null;
-    }));
-    const resolvedLocalMatches = mergeMatches(
-      localMatches,
-      resolvedPending.filter((match): match is PublishedMatch => Boolean(match)),
+  const attachCapacity = useCallback(async (discovered: PublishedMatch[], fetchAllCapacity: boolean) => {
+    const selected = selectedMatchRef.current;
+    if (fetchAllCapacity) {
+      return Promise.all(discovered.map(async (match) => ({
+        ...match,
+        remaining: match.saleAddress ? await fetchRemainingCapacity(match.saleAddress).catch(() => undefined) : match.remaining,
+      })));
+    }
+    if (!selected?.saleAddress) return discovered;
+    const remaining = await fetchRemainingCapacity(selected.saleAddress).catch(() => selected.remaining);
+    return discovered.map((match) =>
+      match.matchId === selected.matchId || match.saleAddress === selected.saleAddress
+        ? { ...match, remaining }
+        : match,
     );
+  }, []);
+
+  const refreshMatches = useCallback(async (options: { mode?: 'full' | 'incremental'; fetchAllCapacity?: boolean; softStatus?: boolean } = {}) => {
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    const mode = options.mode ?? 'full';
+    const fetchAllCapacity = options.fetchAllCapacity ?? mode === 'full';
+    const softStatus = options.softStatus ?? mode === 'incremental';
 
     try {
-      const discovered = isMatchRegistryConfigured() ? await fetchPublishedMatches() : [];
-      const withCapacity = await Promise.all(discovered.map(async (match) => ({ ...match, remaining: match.saleAddress ? await fetchRemainingCapacity(match.saleAddress).catch(() => undefined) : match.remaining })));
+      const tickets = await loadTickets();
+      const cached = await loadCachedMatches();
+      const localMatches = tickets.map(matchFromTicket).filter((match): match is PublishedMatch => Boolean(match));
+      const durableFallback = mergeMatches(cached, localMatches);
+      if (durableFallback.length > 0) setMatches(durableFallback);
+
+      const pendingTickets = tickets.filter((ticket) => ticket.registryTxHash && (!ticket.matchId || !ticket.matchSaleAddress));
+      const resolvedPending = await Promise.all(pendingTickets.map(async (ticket) => {
+        try {
+          const resolved = await Promise.race([
+            getPublishedMatchFromTransaction(ticket.registryTxHash!, extensionRef.current<EvmAccountExtension>()),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+          ]);
+          if (resolved) {
+            await upsertTicket({ ...ticket, matchId: resolved.matchId, matchSaleAddress: resolved.saleAddress, location: resolved.location, updatedAt: new Date().toISOString() });
+            return resolved;
+          }
+        } catch {
+          // Keep the local pin visible while the UserOperation propagates.
+        }
+        return null;
+      }));
+      const resolvedLocalMatches = mergeMatches(
+        localMatches,
+        resolvedPending.filter((match): match is PublishedMatch => Boolean(match)),
+      );
+
+      if (mode === 'full') {
+        const persistedBlock = await loadLastSeenBlock();
+        if (persistedBlock != null) setDiscoveryLastSeenBlock(persistedBlock);
+      }
+
+      const discovered = isMatchRegistryConfigured()
+        ? await fetchPublishedMatches({ mode: mode === 'incremental' ? 'incremental' : 'full' })
+        : [];
+      const withCapacity = await attachCapacity(discovered, fetchAllCapacity);
       const nextMatches = mergeMatches(cached, resolvedLocalMatches, withCapacity);
       setMatches(nextMatches);
       await saveCachedMatches(nextMatches);
-    } catch {
-      setMatches(durableFallback);
-      setStatus({ kind: 'error', message: durableFallback.length > 0 ? 'SHOWING SAVED MATCH PINS — LIVE SYNC RETRYING.' : 'MATCHES COULD NOT SYNC. CHECK YOUR CONNECTION.', action: 'reload' });
-    }
-  }, []);
 
-  useEffect(() => { if (isFocused) void refreshMatches(); }, [isFocused, refreshMatches]);
+      const latestBlock = getDiscoveryLastSeenBlock();
+      if (latestBlock != null) await saveLastSeenBlock(latestBlock);
+
+      if (softStatus) {
+        setStatus((previous) => previous.kind === 'error' ? previous : {
+          kind: 'ready',
+          message: `${nextMatches.length} LIVE MATCH${nextMatches.length === 1 ? '' : 'ES'} · SYNCING`,
+        });
+      } else if (nextMatches.length > 0) {
+        setStatus({ kind: 'ready', message: `${nextMatches.length} LIVE MATCH${nextMatches.length === 1 ? '' : 'ES'} ON SEPOLIA` });
+      }
+    } catch {
+      const cached = await loadCachedMatches();
+      const tickets = await loadTickets();
+      const localMatches = tickets.map(matchFromTicket).filter((match): match is PublishedMatch => Boolean(match));
+      const durableFallback = mergeMatches(cached, localMatches);
+      setMatches(durableFallback);
+      if (!softStatus) {
+        setStatus({ kind: 'error', message: durableFallback.length > 0 ? 'SHOWING SAVED MATCH PINS — LIVE SYNC RETRYING.' : 'MATCHES COULD NOT SYNC. CHECK YOUR CONNECTION.', action: 'reload' });
+      }
+    } finally {
+      refreshingRef.current = false;
+    }
+  }, [attachCapacity]);
+
+  useEffect(() => {
+    if (!isFocused) return;
+    void refreshMatches({ mode: 'full', fetchAllCapacity: true });
+  }, [isFocused, refreshMatches]);
+
+  useEffect(() => {
+    if (!isFocused) return;
+    const interval = setInterval(() => {
+      void refreshMatches({ mode: 'incremental', fetchAllCapacity: false, softStatus: true });
+    }, MAP_POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [isFocused, refreshMatches]);
+
+  useEffect(() => {
+    const saleAddress = selectedMatch?.saleAddress;
+    const matchId = selectedMatch?.matchId;
+    if (!saleAddress || !matchId) return;
+    void (async () => {
+      const remaining = await fetchRemainingCapacity(saleAddress).catch(() => selectedMatch?.remaining);
+      setSelectedMatch((previous) => previous && previous.matchId === matchId ? { ...previous, remaining } : previous);
+      setMatches((previous) => previous.map((match) =>
+        match.matchId === matchId ? { ...match, remaining } : match,
+      ));
+    })();
+  }, [selectedMatch?.matchId, selectedMatch?.saleAddress]);
 
   const changeZoom = (direction: 'in' | 'out') => {
     const nextZoom = getNextZoom(cameraZoom, direction);
@@ -298,7 +377,7 @@ function PlaceSearchModal({ visible, query, results, isSearching, error, onChang
               <MaterialCommunityIcons name="arrow-top-right" size={20} color={RenoPayBrand.foreground} />
             </Pressable>
           ))}
-          {!isSearching && !error && results.length === 0 ? <Text style={styles.searchFeedback}>SEARCH RESULTS ARE TEMPORARY AND ARE NOT SAVED BY MESHiPAY.</Text> : null}
+          {!isSearching && !error && results.length === 0 ? <Text style={styles.searchFeedback}>SEARCH RESULTS ARE TEMPORARY AND ARE NOT SAVED BY RENO PAY.</Text> : null}
         </View>
       </KeyboardAvoidingView>
     </Modal>

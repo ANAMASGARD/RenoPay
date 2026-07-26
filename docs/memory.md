@@ -13,14 +13,14 @@ Current engineering handoff for the WDK-only ticket-payment gateway.
 - **Storage:** Tickets, payment sessions, and attendees are stored in AsyncStorage on their respective phones. No central ticket inventory or payment database exists.
 - **Persona shell:** The app uses an explicit `choose-mode` step, then keeps the active shell role-specific. Fan tabs are `Pay`, `Tickets`, `Map`, `Settings`. Club tabs are `Gate`, `Verify`, `Issued`, `Settings`. `Settings` stays rightmost in both shells. Implemented with `SwipeTabs.Protected` guards in `src/app/(tabs)/_layout.tsx`, `useOnlyUserDefinedScreens: true` in `swipe-tabs.tsx`, and a persona allowlist in `glass-tab-bar.tsx`. Treasury is stack-only at `/treasury` (Club Settings), not a tab.
 - **Public repo:** https://github.com/ANAMASGARD/RenoPay — DoraHacks BUIDL and hackathon submission should describe WDK + QR + local mint + chain watcher, **not** Hyperswarm/P2P ticket transfer (that path is not in the current app).
-- **Map tab:** Live Mapbox globe with direct Sepolia `MatchPosted` log discovery, red event pins, marker detail cards, availability, kickoff time, and WDK purchase action. It requires `EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN` and the public registry address below.
+- **Map tab:** Live Mapbox globe with direct Sepolia `MatchPosted` log discovery, red event pins, marker detail cards, availability, kickoff time, and WDK purchase action. While focused, Map polls every **2 seconds** with incremental recent-block log queries; the first open still performs a full deployment→head scan. Capacity RPCs run on full refresh and for the selected pin only — not on every poll tick. Expect new pins within ~2–4s after Sepolia indexes the club UserOp. Requires `EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN` and the public registry address below.
 - **Marker persistence:** Map markers are cached in AsyncStorage and rehydrated from locally saved ticket locations before RPC sync. On-chain matches remain the source of truth when available, while cached/local pins survive app updates and temporary indexing/RPC gaps.
 - **Map purchase checkout:** `BUY 1` routes into the fan Pay tab with an on-screen checkout QR and explicit confirmation. A successful `MatchSale.buy` mints an encrypted, hash-verified entry proof QR locally; no ticket is shown before a WDK transaction hash exists.
 - **Club verification:** Verify opens the same Expo camera scanner used by Pay. It decrypts and hash-checks the proof QR, enforces the event end time, and consumes each proof once in local gate storage. Issued also watches `TicketsPurchased` logs directly and lists observed buyers without a backend.
 - **Club templates/location:** Ticket creation includes 13 demo templates (10 Indian stadium locations), Mapbox venue search suggestions, direct latitude/longitude entry, exact pin zooming, and a red selected-location marker.
 - **On-chain match registry:** `RenoPayMatchRegistry` is deployed on Sepolia at `0x5311831CDD2Cd7089e0433dA80C5e160Bed7e9a3` (deployment block `11353499`). Source is `contracts/src/RenoPayMatchRegistry.sol`; deployment helper is `scripts/deploy-match-registry.mjs`.
 - **Fast publish behavior:** WDK may return a UserOperation hash before public RPC indexing. Ticket creation saves immediately after WDK accepts the transaction and stores `registryTxHash`; receipt/event lookup is opportunistic, and Map log discovery picks up `MatchPosted` asynchronously. Do not reintroduce a long blocking receipt wait in the create flow.
-- **Marker regression fix:** Persist `draft.location` on issued tickets, render AsyncStorage/cache pins before any network request, read storage directly when Map gains focus, retry unresolved registry hashes through the WDK UserOperation receipt API, query registry log ranges with bounded parallelism, and fail over across Sepolia RPC providers. This prevents stale provider state and indexing races from hiding pins.
+- **Marker regression fix:** Persist `draft.location` on issued tickets, render AsyncStorage/cache pins before any network request, read storage directly when Map gains focus, retry unresolved registry hashes through the WDK UserOperation receipt API, query registry logs with bounded parallelism and RPC racing, and fail over across Sepolia providers. Incremental discovery scans only the last ~3,000 blocks (with overlap) after the initial full sync. This prevents stale provider state and indexing races from hiding pins.
 - **Wallet funding UX:** Settings shows Candide Sepolia mock USDT only (not ETH), with a **FUND WALLET (CANDIDE)** link. Create Ticket preflights USDT balance before registry publish. `pm_getPaymasterData failed` is mapped to faucet guidance via `formatWdkErrorMessage` / `assertFundedForWdkDemo` in `payment-helpers.ts`.
 
 ## Critical WDK configuration
@@ -71,16 +71,48 @@ Current engineering handoff for the WDK-only ticket-payment gateway.
 
 ## Verification and release
 
-- `npm run verify` passed: Expo lint, TypeScript, and **51 Vitest tests**.
-- Tests cover payment preflight/send, QR validation/encryption, payment sessions, treasury swap helpers, wallet utilities, map utils, match-storage, and USDT funding / paymaster error helpers.
+- `npm run verify` passed: Expo lint, TypeScript, and **55 Vitest tests**.
+- Tests cover payment preflight/send, QR validation/encryption, payment sessions, treasury swap helpers, wallet utilities, map utils, match-storage, registry incremental discovery, and USDT funding / paymaster error helpers.
 - WDK bundle regenerated successfully.
 - Registry deployment bytecode was verified on Sepolia after deployment. Public app configuration lives in ignored `.env.local` as `EXPO_PUBLIC_MATCH_REGISTRY_ADDRESS`, `EXPO_PUBLIC_MATCH_REGISTRY_DEPLOYMENT_BLOCK`, and `EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN`.
-- Standalone release APK built successfully:
-  - `android/app/build/outputs/apk/release/app-release.apk`
-  - 198 MB
-  - SHA-256: `cde03d59db0bec33d5c23f42ce09c0a856353633f73172cd4a0eee86efd4b5f8`
-  - GitHub release: https://github.com/ANAMASGARD/RenoPay/releases/tag/v1.0.1 (`renopay-1.0.1.apk`) — includes Candide USDT funding hint, create-ticket USDT preflight, and clearer paymaster errors.
-  - Rebuild with `npm run android:standalone-apk` after JS or env changes.
+
+### Local standalone APK (not published)
+
+Latest local build includes **2s Map incremental discovery** (fast on-chain pins). It was **not** uploaded to GitHub — sideload from disk only.
+
+| Field | Value |
+|---|---|
+| **Absolute path** | `/home/linux/Downloads/RenoPay/android/app/build/outputs/apk/release/app-release.apk` |
+| **Relative path** | `android/app/build/outputs/apk/release/app-release.apk` |
+| **Size** | 198 MB |
+| **SHA-256** | `47f680a7449b06bc93f1f6dc51b54451475c619c5f6433aabcf3c6176e939cd0` |
+| **Package ID** | `com.anonymous.renopay` |
+| **Rebuild** | `source scripts/android-env.sh && set -a && source .env.local && set +a && npm run android:standalone-apk` |
+
+**Sideload (USB):**
+
+```bash
+adb install -r /home/linux/Downloads/RenoPay/android/app/build/outputs/apk/release/app-release.apk
+```
+
+**Previous GitHub release (older build):** https://github.com/ANAMASGARD/RenoPay/releases/tag/v1.0.1 (`renopay-1.0.1.apk`) — Candide USDT funding hint, create-ticket preflight, clearer paymaster errors. Does **not** include 2s Map polling.
+
+## Fast Map discovery (how it works)
+
+No central database — every Fan Map phone reads Sepolia `MatchPosted` logs from `RenoPayMatchRegistry` directly.
+
+| Phase | Behavior |
+|---|---|
+| **Map opens** | Full log scan from deployment block → chain head; fetch `remaining()` for all pins |
+| **While focused** | Poll every **2 seconds**; incremental scan of last ~3,000 blocks (64-block overlap) |
+| **Background ticks** | Skip capacity RPCs — only merge new pins; soft status (`N LIVE MATCHES · SYNCING`) |
+| **Pin selected** | Fetch `MatchSale.remaining()` for that sale only |
+| **RPC** | Race publicnode + drpc + configured URL; first OK wins |
+| **Persistence** | `@renopay/published_matches_v1` cache + `@renopay/match_discovery_last_block_v1` cursor |
+
+**Expectation:** new club pins appear on Fan Map within ~2–4s after Sepolia indexes the UserOp — not before chain inclusion. Club phone still sees its own pin immediately via local ticket cache.
+
+**Key files:** `src/features/matches/registry.ts` (`computeIncrementalFromBlock`, `fetchPublishedMatches`), `src/features/matches/match-storage.ts`, `src/app/(tabs)/map.tsx`.
 
 ## Commands
 
@@ -108,7 +140,15 @@ The one-time proof consume marker is currently local to the verifying gate devic
 
 ## Latest demo handoff
 
-- Install `renopay-1.0.1.apk` from GitHub Releases; unlock wallet; Settings → COPY ADDRESS → Candide mock USDT faucet; confirm USDT balance &gt; 0 before Create Ticket.
-- Fast demo path: select an Indian stadium template, confirm the red pin/venue, publish the ticket, and continue immediately after the WDK UserOperation is accepted. Sepolia log indexing can lag; the app treats this as asynchronous rather than showing a false save failure.
-- If the registry alert appears, restart Metro with `npm start -- --clear`; standalone APKs must be rebuilt after env changes.
-- `SEPOLIA_DEPLOYER_PRIVATE_KEY` is deployment-only and must never be committed or shipped in the app. Remove it from `.env.local` after deployments.
+- **Install locally:** sideload `app-release.apk` from the path above (or use `npm run android:device` for dev client + Metro). Do **not** expect GitHub Releases to have this build — it stays on disk until explicitly published.
+- Unlock wallet → Settings → COPY ADDRESS → Candide mock USDT faucet → confirm USDT balance &gt; 0 before Create Ticket.
+- **Map demo (two phones):** Fan leaves **Map** tab open. Club publishes a ticket. Fan should see the red pin within ~2–4s without leaving Map.
+- Fast create path: select an Indian stadium template, confirm the red pin/venue, publish, and continue immediately after WDK accepts the UserOperation.
+- If the registry alert appears, restart Metro with `npm start -- --clear`; standalone APKs must be rebuilt after `.env.local` changes.
+- `SEPOLIA_DEPLOYER_PRIVATE_KEY` is deployment-only and must never be committed or shipped in the app.
+
+## Recent engineering notes
+
+- Fast on-chain Map discovery is implemented in app code only — **no new registry contract / redeploy**. Same Sepolia address `0x5311831CDD2Cd7089e0433dA80C5e160Bed7e9a3`.
+- Vitest covers `computeIncrementalFromBlock` in `src/features/matches/__tests__/registry-discovery.test.ts`.
+- Do not claim sub-second visibility before Sepolia indexes the UserOp; honest SLA is ~2–4s after inclusion while Map stays focused.
