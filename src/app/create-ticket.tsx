@@ -10,6 +10,7 @@ import { RenoPayLoadingOverlay } from '@/components/ui/renopay-loading-overlay';
 import { WalletConnectButton } from '@/components/wallet/wallet-connect-button';
 import { RenoPayBrand } from '@/constants/renopay-brand';
 import { createTicketFromDraft, createTicketFromDraftWithQr, upsertTicket } from '@/features/tickets/ticket-storage';
+import { assertFundedForWdkDemo, fetchSepoliaUsdtBalanceAtomic, formatWdkErrorMessage } from '@/features/tickets/payment-helpers';
 import { getPublishedMatchFromTransaction, isMatchRegistryConfigured, publishMatch, type EvmAccountExtension } from '@/features/matches/registry';
 import type { TicketDraftInput, TicketRecord } from '@/features/tickets/ticket-types';
 import { useAccount, useWdkApp } from '@/features/wdk/wdk-hooks';
@@ -56,6 +57,9 @@ export default function CreateTicketScreen() {
 
       setSaving(true);
       try {
+        const balanceAtomic = BigInt(await fetchSepoliaUsdtBalanceAtomic(address));
+        assertFundedForWdkDemo(balanceAtomic);
+
         const published = await publishMatch(extension<EvmAccountExtension>(), { ...draft, location: draft.location });
         const ticket = await createTicketFromDraftWithQr(draft, address);
         ticket.registryTxHash = published.hash;
@@ -73,7 +77,7 @@ export default function CreateTicketScreen() {
       } catch (error) {
         Alert.alert(
           'Save failed',
-          error instanceof Error ? error.message : 'Unable to save ticket.',
+          formatWdkErrorMessage(error),
         );
       } finally {
         setSaving(false);

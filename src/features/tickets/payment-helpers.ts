@@ -143,6 +143,48 @@ export function assertSufficientUsdt(available: bigint, required: bigint): void 
   }
 }
 
+/** Minimum mock USDT needed before WDK can quote/submit ERC-4337 contract calls. */
+export const MIN_WDK_DEMO_USDT_ATOMIC = 1_000_000n;
+
+export const CANDIDE_SEPOLIA_FAUCET_URL = 'https://dashboard.candide.dev/faucet';
+
+export function assertFundedForWdkDemo(available: bigint): void {
+  if (available < MIN_WDK_DEMO_USDT_ATOMIC) {
+    throw new Error(
+      `Wallet needs Sepolia test USDT for network fees. In Settings, COPY ADDRESS, then fund mock USDT at ${CANDIDE_SEPOLIA_FAUCET_URL}. Sepolia ETH from other faucets is not shown in this app.`,
+    );
+  }
+}
+
+export function mapWdkTransactionError(error: string | undefined): string {
+  if (!error) {
+    return 'Transaction failed. No hash returned.';
+  }
+  const lower = error.toLowerCase();
+  if (lower.includes('pm_getpaymasterdata') || lower.includes('paymaster')) {
+    return (
+      'Paymaster unavailable or wallet lacks Sepolia USDT. Fund mock USDT at dashboard.candide.dev/faucet ' +
+      'using your in-app wallet address (Settings → COPY ADDRESS), wait ~60s, then retry. ' +
+      'Sepolia ETH from other faucets will not appear here.'
+    );
+  }
+  if (lower.includes('bundler') || lower.includes('useroperation')) {
+    return 'Network busy. Check internet and retry in a moment.';
+  }
+  return mapSendError(error);
+}
+
+export function formatWdkErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  try {
+    const parsed = JSON.parse(raw) as { message?: string; error?: string };
+    const inner = parsed.message ?? parsed.error ?? raw;
+    return mapWdkTransactionError(inner);
+  } catch {
+    return mapWdkTransactionError(raw);
+  }
+}
+
 export function mapSendError(error: string | undefined): string {
   if (!error) {
     return 'Payment failed. No transaction hash returned.';

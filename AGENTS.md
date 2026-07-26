@@ -2,7 +2,7 @@
 
 Decentralized **football-themed local payments & ticketing** for the [Tether Developers Cup](https://dorahacks.io). One app, two roles — **Receiver** (gatekeeper) and **Sender** (fan/payer).
 
-**Repository:** https://github.com/ANAMASGARD/MeshiPay
+**Repository:** https://github.com/ANAMASGARD/RenoPay
 
 Human overview and demo script: [README.md](./README.md).
 

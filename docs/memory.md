@@ -2,7 +2,6 @@
 
 Current engineering handoff for the WDK-only ticket-payment gateway.
 
-
 ---
 
 ## Current product state
@@ -13,7 +12,7 @@ Current engineering handoff for the WDK-only ticket-payment gateway.
 - **Receiver fulfillment:** The receiver polls Sepolia mock-USDT `Transfer` logs from the QR session's start block; on matching receiver and exact amount, it saves an attendee locally.
 - **Storage:** Tickets, payment sessions, and attendees are stored in AsyncStorage on their respective phones. No central ticket inventory or payment database exists.
 - **Persona shell:** The app uses an explicit `choose-mode` step, then keeps the active shell role-specific. Fan tabs are `Pay`, `Tickets`, `Map`, `Settings`. Club tabs are `Gate`, `Verify`, `Issued`, `Settings`. `Settings` stays rightmost in both shells. Implemented with `SwipeTabs.Protected` guards in `src/app/(tabs)/_layout.tsx`, `useOnlyUserDefinedScreens: true` in `swipe-tabs.tsx`, and a persona allowlist in `glass-tab-bar.tsx`. Treasury is stack-only at `/treasury` (Club Settings), not a tab.
-- **Public repo:** https://github.com/ANAMASGARD/MeshiPay — DoraHacks BUIDL and hackathon submission should describe WDK + QR + local mint + chain watcher, **not** Hyperswarm/P2P ticket transfer (that path is not in the current app).
+- **Public repo:** https://github.com/ANAMASGARD/RenoPay — DoraHacks BUIDL and hackathon submission should describe WDK + QR + local mint + chain watcher, **not** Hyperswarm/P2P ticket transfer (that path is not in the current app).
 - **Map tab:** Live Mapbox globe with direct Sepolia `MatchPosted` log discovery, red event pins, marker detail cards, availability, kickoff time, and WDK purchase action. It requires `EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN` and the public registry address below.
 - **Marker persistence:** Map markers are cached in AsyncStorage and rehydrated from locally saved ticket locations before RPC sync. On-chain matches remain the source of truth when available, while cached/local pins survive app updates and temporary indexing/RPC gaps.
 - **Map purchase checkout:** `BUY 1` routes into the fan Pay tab with an on-screen checkout QR and explicit confirmation. A successful `MatchSale.buy` mints an encrypted, hash-verified entry proof QR locally; no ticket is shown before a WDK transaction hash exists.
@@ -22,6 +21,7 @@ Current engineering handoff for the WDK-only ticket-payment gateway.
 - **On-chain match registry:** `RenoPayMatchRegistry` is deployed on Sepolia at `0x5311831CDD2Cd7089e0433dA80C5e160Bed7e9a3` (deployment block `11353499`). Source is `contracts/src/RenoPayMatchRegistry.sol`; deployment helper is `scripts/deploy-match-registry.mjs`.
 - **Fast publish behavior:** WDK may return a UserOperation hash before public RPC indexing. Ticket creation saves immediately after WDK accepts the transaction and stores `registryTxHash`; receipt/event lookup is opportunistic, and Map log discovery picks up `MatchPosted` asynchronously. Do not reintroduce a long blocking receipt wait in the create flow.
 - **Marker regression fix:** Persist `draft.location` on issued tickets, render AsyncStorage/cache pins before any network request, read storage directly when Map gains focus, retry unresolved registry hashes through the WDK UserOperation receipt API, query registry log ranges with bounded parallelism, and fail over across Sepolia RPC providers. This prevents stale provider state and indexing races from hiding pins.
+- **Wallet funding UX:** Settings shows Candide Sepolia mock USDT only (not ETH), with a **FUND WALLET (CANDIDE)** link. Create Ticket preflights USDT balance before registry publish. `pm_getPaymasterData failed` is mapped to faucet guidance via `formatWdkErrorMessage` / `assertFundedForWdkDemo` in `payment-helpers.ts`.
 
 ## Critical WDK configuration
 
@@ -33,6 +33,13 @@ Current engineering handoff for the WDK-only ticket-payment gateway.
 - **Demo ceiling:** `SEPOLIA_DEMO_TRANSFER_MAX_FEE_ATOMIC = 20_000_000` (20 test USD₮) in `src/config/wdk.ts`. It is intentionally testnet-only and is applied by both WDK and Reno Pay preflight.
 - **Contract-call ceiling:** `SEPOLIA_DEMO_TRANSACTION_MAX_FEE_ATOMIC = 20_000_000` covers WDK ERC-4337 calldata calls (registry publish and approval + `MatchSale.buy`).
 - **Fee boundary:** WDK rejects fee quotes `>= transferMaxFee`; Reno Pay preflight matches that condition exactly, preventing an avoidable WDK submission failure.
+
+## Wallet funding (common confusion)
+
+- Settings balance is **Candide mock USDT**, never native Sepolia ETH.
+- Google Cloud / other ETH faucets can succeed on-chain while the app still shows **0** — that is expected.
+- Correct path: Settings → COPY ADDRESS → https://dashboard.candide.dev/faucet → mint mock USDT to the **in-app** address → wait ~30–60s → refresh Settings.
+- Do not fund a MetaMask/browser wallet unless it is the same address shown in Reno Pay Settings.
 
 ## Payment flow
 
@@ -64,14 +71,15 @@ Current engineering handoff for the WDK-only ticket-payment gateway.
 
 ## Verification and release
 
-- `npm run verify` passed: Expo lint, TypeScript, and **48 Vitest tests**.
-- Tests cover payment preflight/send, QR validation/encryption, payment sessions, treasury swap helpers, wallet utilities, map utils, and match-storage.
+- `npm run verify` passed: Expo lint, TypeScript, and **51 Vitest tests**.
+- Tests cover payment preflight/send, QR validation/encryption, payment sessions, treasury swap helpers, wallet utilities, map utils, match-storage, and USDT funding / paymaster error helpers.
 - WDK bundle regenerated successfully.
 - Registry deployment bytecode was verified on Sepolia after deployment. Public app configuration lives in ignored `.env.local` as `EXPO_PUBLIC_MATCH_REGISTRY_ADDRESS`, `EXPO_PUBLIC_MATCH_REGISTRY_DEPLOYMENT_BLOCK`, and `EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN`.
 - Standalone release APK built successfully:
   - `android/app/build/outputs/apk/release/app-release.apk`
   - 198 MB
-  - SHA-256: `073db29ef6263722e53caa5458d1c36a3c318f09ba9f2f62103e870b836ed0ca`
+  - SHA-256: `cde03d59db0bec33d5c23f42ce09c0a856353633f73172cd4a0eee86efd4b5f8`
+  - GitHub release: https://github.com/ANAMASGARD/RenoPay/releases/tag/v1.0.1 (`renopay-1.0.1.apk`) — includes Candide USDT funding hint, create-ticket USDT preflight, and clearer paymaster errors.
   - Rebuild with `npm run android:standalone-apk` after JS or env changes.
 
 ## Commands
@@ -90,7 +98,7 @@ npm run android:standalone-apk
 
 The build and automated checks are complete, but the final external proof must happen on two real phones:
 
-1. Fund sender with more than `20 USD₮ + displayed WDK fee` from the Candide Sepolia faucet.
+1. Fund sender with more than `20 USD₮ + displayed WDK fee` from the Candide Sepolia faucet (not Google ETH faucet).
 2. Receiver opens a 20 USD₮ payment QR.
 3. Sender scans, reviews the exact fee, approves, and receives a local ticket with the real transaction hash.
 4. Receiver waits for the Sepolia `Transfer` log and confirms the attendee appears.
@@ -100,6 +108,7 @@ The one-time proof consume marker is currently local to the verifying gate devic
 
 ## Latest demo handoff
 
+- Install `renopay-1.0.1.apk` from GitHub Releases; unlock wallet; Settings → COPY ADDRESS → Candide mock USDT faucet; confirm USDT balance &gt; 0 before Create Ticket.
 - Fast demo path: select an Indian stadium template, confirm the red pin/venue, publish the ticket, and continue immediately after the WDK UserOperation is accepted. Sepolia log indexing can lag; the app treats this as asynchronous rather than showing a false save failure.
 - If the registry alert appears, restart Metro with `npm start -- --clear`; standalone APKs must be rebuilt after env changes.
 - `SEPOLIA_DEPLOYER_PRIVATE_KEY` is deployment-only and must never be committed or shipped in the app. Remove it from `.env.local` after deployments.

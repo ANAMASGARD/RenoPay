@@ -8,7 +8,7 @@ import {
 } from 'viem';
 
 import { getPaymasterTokenAddress, getSepoliaRpcUrl, getTransactionMaxFeeAtomic } from '@/config/wdk';
-import { usdtToAtomic } from '@/features/tickets/payment-helpers';
+import { formatWdkErrorMessage, usdtToAtomic } from '@/features/tickets/payment-helpers';
 import type { EventLocation } from '@/features/tickets/ticket-types';
 
 export const MATCH_REGISTRY_ABI = [
@@ -177,8 +177,12 @@ export function buildCreateMatchCall(draft: { eventName: string; homeTeam: strin
 
 export async function publishMatch(extension: EvmAccountExtension, draft: Parameters<typeof buildCreateMatchCall>[0]): Promise<{ hash: string; fee: string }> {
   const tx = { to: getMatchRegistryAddress(), value: 0n, data: buildCreateMatchCall(draft) };
-  await extension.quoteSendTransaction(tx, { transactionMaxFee: getTransactionMaxFeeAtomic() });
-  return extension.sendTransaction(tx, { transactionMaxFee: getTransactionMaxFeeAtomic() });
+  try {
+    await extension.quoteSendTransaction(tx, { transactionMaxFee: getTransactionMaxFeeAtomic() });
+    return await extension.sendTransaction(tx, { transactionMaxFee: getTransactionMaxFeeAtomic() });
+  } catch (error) {
+    throw new Error(formatWdkErrorMessage(error));
+  }
 }
 
 function decodeMatchLogs(logs: { topics: string[]; data: string }[]): PublishedMatch | null {
@@ -232,6 +236,10 @@ export async function buyMatchTickets(extension: EvmAccountExtension, saleAddres
     { to: getPaymasterTokenAddress(), value: 0n, data: encodeFunctionData({ abi: ERC20_ABI, functionName: 'approve', args: [saleAddress as `0x${string}`, amount] }) },
     { to: saleAddress, value: 0n, data: encodeFunctionData({ abi: MATCH_REGISTRY_ABI, functionName: 'buy', args: [quantity] }) },
   ];
-  await extension.quoteSendTransaction(tx, { transactionMaxFee: getTransactionMaxFeeAtomic() });
-  return extension.sendTransaction(tx, { transactionMaxFee: getTransactionMaxFeeAtomic() });
+  try {
+    await extension.quoteSendTransaction(tx, { transactionMaxFee: getTransactionMaxFeeAtomic() });
+    return await extension.sendTransaction(tx, { transactionMaxFee: getTransactionMaxFeeAtomic() });
+  } catch (error) {
+    throw new Error(formatWdkErrorMessage(error));
+  }
 }

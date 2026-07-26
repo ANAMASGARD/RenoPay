@@ -100,6 +100,15 @@ export default function SettingsScreen() {
         <>
           <WalletBalanceRing address={address} />
           <WalletAddressCopyRow address={address} />
+          <Text style={styles.fundingHint}>
+            Balance is Candide Sepolia mock USDT — not ETH. Tap below to fund the copied address.
+          </Text>
+          <NeoBrutalMenuRow
+            icon={<MaterialCommunityIcons name="wallet-plus-outline" size={28} color={RenoPayBrand.border} />}
+            subtitle="Mint mock USDT to your in-app wallet (not Sepolia ETH faucets)"
+            title="FUND WALLET (CANDIDE)"
+            onPress={() => Linking.openURL('https://dashboard.candide.dev/faucet').catch(() => undefined)}
+          />
         </>
       ) : null}
 
@@ -179,5 +188,14 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     textAlign: 'center',
     marginBottom: 12,
+  },
+  fundingHint: {
+    color: RenoPayBrand.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 4,
+    paddingHorizontal: 8,
   },
 });
