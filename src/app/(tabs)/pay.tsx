@@ -18,8 +18,27 @@ import { useTickets } from '@/features/tickets/tickets-context';
 import { usePaySwipeLock } from '@/hooks/use-pay-swipe-lock';
 import { usePaymentFlow } from '@/hooks/use-payment-flow';
 
-type MatchCheckout = { saleAddress: string; matchId: string; eventName: string; homeTeam: string; awayTeam: string; venue: string; priceUsdt: string; capacity: number; remaining: number; startAt: string; clubAddress: string };
+type MatchCheckout = {
+  saleAddress: string;
+  matchId: string;
+  eventName: string;
+  homeTeam: string;
+  awayTeam: string;
+  venue: string;
+  priceUsdt: string;
+  priceAtomic: string;
+  latitude: number;
+  longitude: number;
+  capacity: number;
+  remaining: number;
+  startAt: string;
+  clubAddress: string;
+};
 function asParam(value: string | string[] | undefined): string { return Array.isArray(value) ? value[0] ?? '' : value ?? ''; }
+function asNumberParam(value: string | string[] | undefined): number {
+  const parsed = Number(asParam(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
 export default function PayScreen() {
   const router = useRouter();
@@ -45,6 +64,9 @@ export default function PayScreen() {
       awayTeam: asParam(params.awayTeam),
       venue: asParam(params.venue),
       priceUsdt: asParam(params.priceUsdt),
+      priceAtomic: asParam(params.priceAtomic),
+      latitude: asNumberParam(params.latitude),
+      longitude: asNumberParam(params.longitude),
       capacity: Number(asParam(params.capacity)),
       remaining: Number(asParam(params.remaining)),
       startAt: asParam(params.startAt),
@@ -58,13 +80,27 @@ export default function PayScreen() {
     try {
       const result = await buyMatchTickets(account.extension<EvmAccountExtension>(), checkout.saleAddress, checkout.priceUsdt, 1);
       await mintReceivedTicketFromMatch({
-        match: { matchId: checkout.matchId, saleAddress: checkout.saleAddress, clubAddress: checkout.clubAddress, eventName: checkout.eventName, homeTeam: checkout.homeTeam, awayTeam: checkout.awayTeam, venue: checkout.venue, location: { latitude: 0, longitude: 0 }, startAt: checkout.startAt, priceUsdt: checkout.priceUsdt, priceAtomic: '0', capacity: checkout.capacity },
+        match: {
+          matchId: checkout.matchId,
+          saleAddress: checkout.saleAddress,
+          clubAddress: checkout.clubAddress,
+          eventName: checkout.eventName,
+          homeTeam: checkout.homeTeam,
+          awayTeam: checkout.awayTeam,
+          venue: checkout.venue,
+          location: { latitude: checkout.latitude, longitude: checkout.longitude, label: checkout.venue },
+          startAt: checkout.startAt,
+          priceUsdt: checkout.priceUsdt,
+          priceAtomic: checkout.priceAtomic || '0',
+          capacity: checkout.capacity,
+        },
         quantity: 1,
         senderAddress: address,
         txHash: result.hash,
       });
       await tickets.refresh();
       Alert.alert('Ticket purchased', 'Your verified entry QR is now in Tickets.', [
+        { text: 'VIEW ON MAP', onPress: () => router.replace({ pathname: '/(tabs)/map', params: { focusMatchId: checkout.matchId, latitude: String(checkout.latitude), longitude: String(checkout.longitude), eventName: checkout.eventName } } as never) },
         { text: 'VIEW TICKET', onPress: () => router.replace('/tickets') },
         { text: 'STAY HERE', style: 'cancel' },
       ]);
@@ -173,11 +209,11 @@ function MatchCheckoutCard({ checkout, walletReady, loading, onBuy, onCancel }: 
         <Text style={styles.checkoutCopy}>{checkout.homeTeam} vs {checkout.awayTeam}</Text>
         <Text style={styles.checkoutCopy}>{checkout.venue}</Text>
         <Text style={styles.checkoutCopy}>KICKOFF: {new Date(checkout.startAt).toLocaleString()}</Text>
-        <Text style={styles.checkoutPrice}>{checkout.priceUsdt} USDT Â· {checkout.remaining} SEATS LEFT</Text>
+        <Text style={styles.checkoutPrice}>{checkout.priceUsdt} USDT · {checkout.remaining} SEATS LEFT</Text>
         <View style={styles.checkoutQr}><QrCodeView value={qr} size={150} /></View>
         <Text style={styles.checkoutHint}>Confirm once. WDK settles the ticket on Sepolia and saves the entry proof locally.</Text>
         <View style={styles.checkoutActions}>
-          <Pressable accessibilityRole="button" disabled={!walletReady || loading} onPress={onBuy} style={[styles.checkoutBuy, (!walletReady || loading) && styles.disabled]}><Text style={styles.checkoutButtonText}>{loading ? 'PAYINGâ€¦' : 'YES, BUY 1'}</Text></Pressable>
+          <Pressable accessibilityRole="button" disabled={!walletReady || loading} onPress={onBuy} style={[styles.checkoutBuy, (!walletReady || loading) && styles.disabled]}><Text style={styles.checkoutButtonText}>{loading ? 'PAYING…' : 'YES, BUY 1'}</Text></Pressable>
           <Pressable accessibilityRole="button" disabled={loading} onPress={onCancel} style={styles.checkoutCancel}><Text style={styles.checkoutCancelText}>NO</Text></Pressable>
         </View>
       </View>

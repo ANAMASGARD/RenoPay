@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import type { PublishedMatch } from '@/features/matches/registry';
-import type { TicketRecord } from '@/features/tickets/ticket-types';
+import type { EventLocation, TicketRecord } from '@/features/tickets/ticket-types';
 
 const MATCH_CACHE_KEY = '@renopay/published_matches_v1';
 const LAST_SEEN_BLOCK_KEY = '@renopay/match_discovery_last_block_v1';
@@ -20,6 +20,21 @@ const DEMO_STADIUMS = [
   ['Jawaharlal Nehru Stadium, Chennai', 13.0627, 80.2792],
   ['Ambedkar Stadium', 28.6372, 77.2431],
 ] as const;
+
+function findStadiumLocation(venue: string): EventLocation | null {
+  const normalizedVenue = venue.toLowerCase();
+  const knownStadium = DEMO_STADIUMS.find(([name]) => normalizedVenue.includes(name.toLowerCase()));
+  if (!knownStadium) return null;
+  return { latitude: knownStadium[1], longitude: knownStadium[2], label: knownStadium[0] };
+}
+
+/** Resolves map coordinates for a ticket — explicit pin first, then Indian stadium venue fallback. */
+export function resolveTicketLocation(ticket: Pick<TicketRecord, 'location' | 'venue'>): EventLocation | null {
+  if (ticket.location?.latitude != null && ticket.location?.longitude != null) {
+    return ticket.location;
+  }
+  return findStadiumLocation(ticket.venue);
+}
 
 function isPublishedMatch(value: unknown): value is PublishedMatch {
   if (!value || typeof value !== 'object') return false;
@@ -61,9 +76,7 @@ export async function saveLastSeenBlock(block: number): Promise<void> {
 
 /** Rehydrates a map marker from a locally persisted ticket while RPC indexing catches up. */
 export function matchFromTicket(ticket: TicketRecord): PublishedMatch | null {
-  const normalizedVenue = ticket.venue.toLowerCase();
-  const knownStadium = DEMO_STADIUMS.find(([name]) => normalizedVenue.includes(name.toLowerCase()));
-  const location = ticket.location ?? (knownStadium ? { latitude: knownStadium[1], longitude: knownStadium[2], label: knownStadium[0] } : undefined);
+  const location = resolveTicketLocation(ticket);
   if (!location) return null;
   return {
     matchId: ticket.matchId ?? `local-${ticket.ticketId}`,

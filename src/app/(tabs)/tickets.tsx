@@ -1,3 +1,4 @@
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Alert, Modal, Pressable, Share, StyleSheet, Text, View } from 'react-native';
 
@@ -6,6 +7,7 @@ import { QrCodeView } from '@/components/tickets/qr-code-view';
 import { TicketCard } from '@/components/tickets/ticket-card';
 import { RenoPayInlineLoader } from '@/components/ui/renopay-inline-loader';
 import { RenoPayBrand } from '@/constants/renopay-brand';
+import { resolveTicketLocation } from '@/features/matches/match-storage';
 import { shortAddress } from '@/features/tickets/payment-helpers';
 import type { TicketRecord } from '@/features/tickets/ticket-types';
 import { useTickets } from '@/features/tickets/tickets-context';
@@ -23,9 +25,27 @@ function shareEntryPass(ticket: TicketRecord) {
 }
 
 export default function TicketsScreen() {
+  const router = useRouter();
   const { tickets, loading } = useTickets();
   const [verificationQr, setVerificationQr] = useState<string | null>(null);
   const received = tickets.filter((ticket) => ticket.kind === 'received');
+
+  const openTicketOnMap = (ticket: TicketRecord) => {
+    const location = resolveTicketLocation(ticket);
+    if (!location) {
+      Alert.alert('Map unavailable', 'No map pin for this ticket yet. Try again after the match location syncs.');
+      return;
+    }
+    router.push({
+      pathname: '/(tabs)/map',
+      params: {
+        focusMatchId: ticket.matchId ?? ticket.ticketId,
+        latitude: String(location.latitude),
+        longitude: String(location.longitude),
+        eventName: ticket.eventName,
+      },
+    } as never);
+  };
 
   return (
     <PitchScreen>
@@ -44,7 +64,11 @@ export default function TicketsScreen() {
             ticket={ticket}
             onQrPress={ticket.ticketQrPayload ? () => setVerificationQr(ticket.ticketQrPayload!) : undefined}
             onPress={() => {
+              const location = resolveTicketLocation(ticket);
               const actions = [
+                location
+                  ? { text: 'View on map', onPress: () => openTicketOnMap(ticket) }
+                  : null,
                 ticket.ticketQrPayload
                   ? {
                       text: 'Show verification QR',

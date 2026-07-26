@@ -15,7 +15,8 @@ Current engineering handoff for the WDK-only ticket-payment gateway.
 - **Public repo:** https://github.com/ANAMASGARD/RenoPay — DoraHacks BUIDL and hackathon submission should describe WDK + QR + local mint + chain watcher, **not** Hyperswarm/P2P ticket transfer (that path is not in the current app).
 - **Map tab:** Live Mapbox globe with direct Sepolia `MatchPosted` log discovery, red event pins, marker detail cards, availability, kickoff time, and WDK purchase action. While focused, Map polls every **2 seconds** with incremental recent-block log queries; the first open still performs a full deployment→head scan. Capacity RPCs run on full refresh and for the selected pin only — not on every poll tick. Expect new pins within ~2–4s after Sepolia indexes the club UserOp. Requires `EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN` and the public registry address below.
 - **Marker persistence:** Map markers are cached in AsyncStorage and rehydrated from locally saved ticket locations before RPC sync. On-chain matches remain the source of truth when available, while cached/local pins survive app updates and temporary indexing/RPC gaps.
-- **Map purchase checkout:** `BUY 1` routes into the fan Pay tab with an on-screen checkout QR and explicit confirmation. A successful `MatchSale.buy` mints an encrypted, hash-verified entry proof QR locally; no ticket is shown before a WDK transaction hash exists.
+- **Map purchase checkout:** `BUY 1` routes into the fan Pay tab with an on-screen checkout QR and explicit confirmation — **no payment QR scan required** (remote fans in another city can buy from the map pin). A successful `MatchSale.buy` mints an encrypted, hash-verified entry proof QR locally with the real stadium coordinates; no ticket is shown before a WDK transaction hash exists.
+- **Tickets → Map:** Fan ticket tap offers **View on map** (alongside verification QR / share). Uses `resolveTicketLocation()` — explicit `ticket.location` first, then Indian stadium venue fallback — and deep-links Map with `focusMatchId` + coordinates. Map flies to the pin and selects the match card.
 - **Club verification:** Verify opens the same Expo camera scanner used by Pay. It decrypts and hash-checks the proof QR, enforces the event end time, and consumes each proof once in local gate storage. Issued also watches `TicketsPurchased` logs directly and lists observed buyers without a backend.
 - **Club templates/location:** Ticket creation includes 13 demo templates (10 Indian stadium locations), Mapbox venue search suggestions, direct latitude/longitude entry, exact pin zooming, and a red selected-location marker.
 - **On-chain match registry:** `RenoPayMatchRegistry` is deployed on Sepolia at `0x5311831CDD2Cd7089e0433dA80C5e160Bed7e9a3` (deployment block `11353499`). Source is `contracts/src/RenoPayMatchRegistry.sol`; deployment helper is `scripts/deploy-match-registry.mjs`.
@@ -71,21 +72,21 @@ Current engineering handoff for the WDK-only ticket-payment gateway.
 
 ## Verification and release
 
-- `npm run verify` passed: Expo lint, TypeScript, and **55 Vitest tests**.
+- `npm run verify` passed: Expo lint, TypeScript, and **56 Vitest tests**.
 - Tests cover payment preflight/send, QR validation/encryption, payment sessions, treasury swap helpers, wallet utilities, map utils, match-storage, registry incremental discovery, and USDT funding / paymaster error helpers.
 - WDK bundle regenerated successfully.
 - Registry deployment bytecode was verified on Sepolia after deployment. Public app configuration lives in ignored `.env.local` as `EXPO_PUBLIC_MATCH_REGISTRY_ADDRESS`, `EXPO_PUBLIC_MATCH_REGISTRY_DEPLOYMENT_BLOCK`, and `EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN`.
 
 ### Local standalone APK (not published)
 
-Latest local build includes **2s Map incremental discovery** (fast on-chain pins). It was **not** uploaded to GitHub — sideload from disk only.
+Latest local build includes **2s Map incremental discovery**, **Tickets → View on map**, and **Map BUY with real stadium coordinates** (no QR scan required). It was **not** uploaded to GitHub — sideload from disk only.
 
 | Field | Value |
 |---|---|
 | **Absolute path** | `/home/linux/Downloads/RenoPay/android/app/build/outputs/apk/release/app-release.apk` |
 | **Relative path** | `android/app/build/outputs/apk/release/app-release.apk` |
 | **Size** | 198 MB |
-| **SHA-256** | `47f680a7449b06bc93f1f6dc51b54451475c619c5f6433aabcf3c6176e939cd0` |
+| **SHA-256** | `8520a1bc61e725f00a60780e0bf68077ca9280b955b70d0bf3fcfcb5ee965265` |
 | **Package ID** | `com.anonymous.renopay` |
 | **Rebuild** | `source scripts/android-env.sh && set -a && source .env.local && set +a && npm run android:standalone-apk` |
 
@@ -112,7 +113,7 @@ No central database — every Fan Map phone reads Sepolia `MatchPosted` logs fro
 
 **Expectation:** new club pins appear on Fan Map within ~2–4s after Sepolia indexes the UserOp — not before chain inclusion. Club phone still sees its own pin immediately via local ticket cache.
 
-**Key files:** `src/features/matches/registry.ts` (`computeIncrementalFromBlock`, `fetchPublishedMatches`), `src/features/matches/match-storage.ts`, `src/app/(tabs)/map.tsx`.
+**Key files:** `src/features/matches/registry.ts` (`computeIncrementalFromBlock`, `fetchPublishedMatches`), `src/features/matches/match-storage.ts` (`resolveTicketLocation`, `matchFromTicket`), `src/app/(tabs)/map.tsx`, `src/app/(tabs)/tickets.tsx`, `src/app/(tabs)/pay.tsx`.
 
 ## Commands
 
@@ -142,7 +143,8 @@ The one-time proof consume marker is currently local to the verifying gate devic
 
 - **Install locally:** sideload `app-release.apk` from the path above (or use `npm run android:device` for dev client + Metro). Do **not** expect GitHub Releases to have this build — it stays on disk until explicitly published.
 - Unlock wallet → Settings → COPY ADDRESS → Candide mock USDT faucet → confirm USDT balance &gt; 0 before Create Ticket.
-- **Map demo (two phones):** Fan leaves **Map** tab open. Club publishes a ticket. Fan should see the red pin within ~2–4s without leaving Map.
+- **Map demo (two phones):** Fan leaves **Map** tab open. Club publishes a ticket. Fan should see the red pin within ~2–4s without leaving Map. Fan can **BUY 1** without scanning a gate QR (WDK MatchSale on Sepolia).
+- **Tickets → Map demo:** After purchase, tap ticket → **View on map** → Map centers on the match pin.
 - Fast create path: select an Indian stadium template, confirm the red pin/venue, publish, and continue immediately after WDK accepts the UserOperation.
 - If the registry alert appears, restart Metro with `npm start -- --clear`; standalone APKs must be rebuilt after `.env.local` changes.
 - `SEPOLIA_DEPLOYER_PRIVATE_KEY` is deployment-only and must never be committed or shipped in the app.

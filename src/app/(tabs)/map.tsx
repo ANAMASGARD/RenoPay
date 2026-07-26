@@ -1,5 +1,5 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useIsFocused } from '@react-navigation/native';
 import { Atmosphere, Camera, MapView, PointAnnotation, setAccessToken, type Camera as CameraRef, type MapState } from '@rnmapbox/maps';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -30,6 +30,10 @@ if (hasMapboxAccessToken(mapboxAccessToken)) {
 
 const MAP_POLL_INTERVAL_MS = 2_000;
 
+function asParam(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value[0] ?? '' : value ?? '';
+}
+
 type MapStatus =
   | { kind: 'loading'; message: string }
   | { kind: 'ready'; message: string }
@@ -38,6 +42,7 @@ type MapStatus =
 export default function MapScreen() {
   const cameraRef = useRef<CameraRef>(null);
   const router = useRouter();
+  const params = useLocalSearchParams<Record<string, string | string[]>>();
   const isFocused = useIsFocused();
   const [cameraZoom, setCameraZoom] = useState(MAP_INITIAL_CAMERA.zoomLevel);
   const [mapReloadKey, setMapReloadKey] = useState(0);
@@ -51,11 +56,10 @@ export default function MapScreen() {
   const [selectedMatch, setSelectedMatch] = useState<PublishedMatch | null>(null);
   const refreshingRef = useRef(false);
   const selectedMatchRef = useRef<PublishedMatch | null>(null);
+  const lastAppliedFocusRef = useRef<string | null>(null);
   const account = useAccount({ network: 'ethereum', accountIndex: 0 }) as unknown as { address: string | null; extension: <T extends object>() => T };
   const { extension } = account;
   const extensionRef = useRef(extension);
-  extensionRef.current = extension;
-
   extensionRef.current = extension;
   selectedMatchRef.current = selectedMatch;
 
@@ -177,6 +181,65 @@ export default function MapScreen() {
     })();
   }, [selectedMatch?.matchId, selectedMatch?.saleAddress]);
 
+  const applyMapFocus = useCallback((focusMatchId: string, latitude: number, longitude: number, eventName: string, currentMatches: PublishedMatch[]) => {
+    const matched = currentMatches.find((match) =>
+      match.matchId === focusMatchId ||
+      match.saleAddress === focusMatchId ||
+      (Math.abs(match.location.latitude - latitude) < 0.0001 && Math.abs(match.location.longitude - longitude) < 0.0001),
+    );
+    const focusMatch: PublishedMatch = matched ?? {
+      matchId: focusMatchId,
+      saleAddress: '',
+      clubAddress: '',
+      eventName: eventName || 'YOUR MATCH',
+      homeTeam: '',
+      awayTeam: '',
+      venue: eventName || 'Match venue',
+      location: { latitude, longitude },
+      startAt: new Date().toISOString(),
+      priceUsdt: '0',
+      priceAtomic: '0',
+      capacity: 0,
+    };
+    setSelectedMatch(focusMatch);
+    cameraRef.current?.setCamera({
+      centerCoordinate: [longitude, latitude],
+      zoomLevel: MAP_SEARCH_ZOOM,
+      animationDuration: 900,
+      animationMode: 'flyTo',
+    });
+    setCameraZoom(MAP_SEARCH_ZOOM);
+    setStatus({ kind: 'ready', message: 'SHOWING YOUR MATCH PIN' });
+  }, []);
+
+  useEffect(() => {
+    const focusMatchId = asParam(params.focusMatchId);
+    const latitude = Number(asParam(params.latitude));
+    const longitude = Number(asParam(params.longitude));
+    const eventName = asParam(params.eventName);
+    if (!focusMatchId || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      lastAppliedFocusRef.current = null;
+      return;
+    }
+
+    const focusKey = `${focusMatchId}:${latitude}:${longitude}`;
+    if (lastAppliedFocusRef.current === focusKey) return;
+
+    lastAppliedFocusRef.current = focusKey;
+    applyMapFocus(focusMatchId, latitude, longitude, eventName, matches);
+    router.replace('/(tabs)/map' as never);
+  }, [applyMapFocus, matches, params.eventName, params.focusMatchId, params.latitude, params.longitude, router]);
+
+  useEffect(() => {
+    if (!selectedMatch?.matchId || selectedMatch.saleAddress) return;
+    const upgraded = matches.find((match) =>
+      match.matchId === selectedMatch.matchId ||
+      (Math.abs(match.location.latitude - selectedMatch.location.latitude) < 0.0001 &&
+        Math.abs(match.location.longitude - selectedMatch.location.longitude) < 0.0001),
+    );
+    if (upgraded) setSelectedMatch(upgraded);
+  }, [matches, selectedMatch]);
+
   const changeZoom = (direction: 'in' | 'out') => {
     const nextZoom = getNextZoom(cameraZoom, direction);
     cameraRef.current?.zoomTo(nextZoom, 300);
@@ -229,7 +292,7 @@ export default function MapScreen() {
 
   const buySelectedMatch = () => {
     if (!selectedMatch || !account.address) { Alert.alert('Wallet required', 'Connect your wallet before buying a match ticket.'); return; }
-    if ((selectedMatch.remaining ?? 0) < 1) { Alert.alert('Sold out', 'This event is sold out.'); return; }
+    if (selectedMatch.remaining != null && selectedMatch.remaining < 1) { Alert.alert('Sold out', 'This event is sold out.'); return; }
     if (!selectedMatch.saleAddress) { Alert.alert('Purchase unavailable', 'This saved marker is waiting for its on-chain sale address to sync.'); return; }
     router.push({ pathname: '/pay', params: {
       saleAddress: selectedMatch.saleAddress,
@@ -239,6 +302,9 @@ export default function MapScreen() {
       awayTeam: selectedMatch.awayTeam,
       venue: selectedMatch.venue,
       priceUsdt: selectedMatch.priceUsdt,
+      priceAtomic: selectedMatch.priceAtomic,
+      latitude: String(selectedMatch.location.latitude),
+      longitude: String(selectedMatch.location.longitude),
       capacity: String(selectedMatch.capacity),
       remaining: String(selectedMatch.remaining ?? selectedMatch.capacity),
       startAt: selectedMatch.startAt,

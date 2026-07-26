@@ -310,7 +310,9 @@ After `npm install`, postinstall re-applies the bare-kit patch. Re-run `npm run 
 - `contracts/src/RenoPayMatchRegistry.sol` contains the permissionless registry and isolated `MatchSale` contracts. The live Sepolia registry is `0x5311831CDD2Cd7089e0433dA80C5e160Bed7e9a3`, deployed at block `11353499`.
 - Public runtime configuration belongs in ignored `.env.local`: `EXPO_PUBLIC_MATCH_REGISTRY_ADDRESS` and `EXPO_PUBLIC_MATCH_REGISTRY_DEPLOYMENT_BLOCK`. `SEPOLIA_DEPLOYER_PRIVATE_KEY` is deployment-only; never commit it, bundle it, or print it.
 - `src/components/tickets/ticket-builder-form.tsx` contains 13 demo templates, including 10 Indian stadiums. `src/components/tickets/event-location-picker.tsx` provides Mapbox venue search suggestions, manual coordinates, exact pin selection, automatic zoom, and a red marker.
-- `src/app/(tabs)/map.tsx` queries `MatchPosted` logs directly from Sepolia, displays red match pins, event details, kickoff, price, remaining seats, and a WDK purchase action. While focused it polls every **2 seconds** with incremental log queries; full scan on open. `MatchSale.remaining()` is fetched on full refresh and for the selected pin only.
+- `src/app/(tabs)/map.tsx` queries `MatchPosted` logs directly from Sepolia, displays red match pins, event details, kickoff, price, remaining seats, and a WDK purchase action. While focused it polls every **2 seconds** with incremental log queries; full scan on open. `MatchSale.remaining()` is fetched on full refresh and for the selected pin only. Map **BUY 1** opens Pay checkout without a payment QR scan (remote purchase path).
+- `src/app/(tabs)/tickets.tsx` offers **View on map** on received tickets via `resolveTicketLocation()` deep link to Map focus params.
+- `src/app/(tabs)/pay.tsx` MatchSale checkout mints tickets with real map coordinates passed from Map (not `0,0`).
 - `src/features/matches/registry.ts` owns contract ABI, calldata, log decoding, registry publishing, incremental discovery helpers, RPC racing, and batched approval + `buy()` calls. `transactionMaxFee` is separate from the legacy token-transfer `transferMaxFee`.
 - Do not make ticket creation block on a public receipt. WDK can return a UserOperation hash before the RPC exposes a receipt; save the local ticket and `registryTxHash` immediately after WDK accepts the publish. Map discovery indexes the event asynchronously via 2s incremental polling — no central database.
 - If a fresh dev client does not see the registry, restart Metro with `npm start -- --clear`; a standalone APK must be rebuilt after env changes. `npm run verify` currently passes with 55 tests.
@@ -344,7 +346,7 @@ npm run verify   # Expo lint + TypeScript + Vitest (55 tests)
 4. **Both:** fan sees **Tickets**; gatekeeper sees **Attendees** after chain verification.
 5. Mention: no central server; Sepolia testnet mock USD₮; ticket data is encrypted in the payment QR and minted locally only after a transaction hash.
 
-6. Fan Map BUY opens Pay checkout. Confirm YES, approve the WDK MatchSale call, then open Tickets and tap the card to show the encrypted verification QR.
+6. Fan Map BUY opens Pay checkout (no QR scan). Confirm YES, approve the WDK MatchSale call, then open Tickets → **View on map** to see the stadium pin, or show the encrypted verification QR.
 7. Club Verify scans that QR. The gatekeeper wallet must match the ticket issuer; the proof is rejected if tampered, expired, or already consumed on that gate device.
 
 ### Demo wallet funding (gasless USDT)
