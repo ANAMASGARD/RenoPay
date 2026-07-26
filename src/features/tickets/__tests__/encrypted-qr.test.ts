@@ -102,7 +102,7 @@ describe('encrypted qr flows', () => {
     );
     expect(verified.ok).toBe(false);
     if (!verified.ok) {
-      expect(verified.reason).toContain('not issued by your gate');
+      expect(verified.reason).toContain('Wrong club wallet');
     }
   });
 });

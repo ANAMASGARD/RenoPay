@@ -173,7 +173,7 @@ Load Archivo Black + Space Grotesk via `expo-font` in `_layout.tsx` when adding 
 | `pay` | Fan scan → WDK fee quote → approve → pay | Done |
 | `tickets` | Fan’s locally stored, QR-verifiable tickets | Done |
 | `map` | Fan Mapbox discovery with durable red match pins, local ticket rehydration, and BUY → Pay checkout | Done |
-| `attendees` | Club verification camera: decrypt/hash-check proof QR and consume once locally | Done |
+| `attendees` | Club verification camera: decrypt/hash-check proof QR, then VERIFY or EXPIRE (device-local disposition by purchase key) | Done |
 | `issued` | Club-issued tickets plus direct `TicketsPurchased` log watcher | Done |
 | `settings` | Wallet address, balance, security, persona switch, logout | Done |
 
@@ -320,7 +320,7 @@ After `npm install`, postinstall re-applies the bare-kit patch. Re-run `npm run 
 ## Verification
 
 ```bash
-npm run verify   # Expo lint + TypeScript + Vitest (55 tests)
+npm run verify   # Expo lint + TypeScript + Vitest (60 tests)
 ```
 
 ---
@@ -347,7 +347,7 @@ npm run verify   # Expo lint + TypeScript + Vitest (55 tests)
 5. Mention: no central server; Sepolia testnet mock USD₮; ticket data is encrypted in the payment QR and minted locally only after a transaction hash.
 
 6. Fan Map BUY opens Pay checkout (no QR scan). Confirm YES, approve the WDK MatchSale call, then open Tickets → **View on map** to see the stadium pin, or show the encrypted verification QR.
-7. Club Verify scans that QR. The gatekeeper wallet must match the ticket issuer; the proof is rejected if tampered, expired, or already consumed on that gate device.
+7. Club Verify scans the fan **verification** QR from Tickets (not the Gate payment QR). Choose **VERIFY** or **EXPIRE**; the gatekeeper wallet must match the ticket issuer. Proof is keyed by purchase id so multiple fans can buy the same gate offer.
 
 ### Demo wallet funding (gasless USDT)
 

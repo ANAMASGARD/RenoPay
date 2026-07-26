@@ -8,6 +8,8 @@ import { RenoPayBrand } from '@/constants/renopay-brand';
 type QrCodeViewProps = {
   value: string;
   size?: number;
+  /** Dense encrypted proof QRs should use L so modules stay large enough to scan. */
+  errorCorrectionLevel?: 'L' | 'M' | 'Q' | 'H';
 };
 
 type SvgRect = {
@@ -18,9 +20,9 @@ type SvgRect = {
   height: number;
 };
 
-function buildMatrix(value: string): boolean[][] {
+function buildMatrix(value: string, errorCorrectionLevel: 'L' | 'M' | 'Q' | 'H'): boolean[][] {
   try {
-    const qr = QRCodeLib.create(value, { errorCorrectionLevel: 'M' });
+    const qr = QRCodeLib.create(value, { errorCorrectionLevel });
     const gridSize = qr.modules.size;
     const next: boolean[][] = [];
     for (let row = 0; row < gridSize; row += 1) {
@@ -61,8 +63,12 @@ function matrixToRunLengthRects(matrix: boolean[][], cellSize: number): SvgRect[
   return rects;
 }
 
-export const QrCodeView = memo(function QrCodeView({ value, size = 160 }: QrCodeViewProps) {
-  const matrix = useMemo(() => buildMatrix(value), [value]);
+export const QrCodeView = memo(function QrCodeView({
+  value,
+  size = 160,
+  errorCorrectionLevel = 'M',
+}: QrCodeViewProps) {
+  const matrix = useMemo(() => buildMatrix(value, errorCorrectionLevel), [errorCorrectionLevel, value]);
   const moduleCount = matrix.length;
   const cellSize = moduleCount > 0 ? size / moduleCount : 0;
 

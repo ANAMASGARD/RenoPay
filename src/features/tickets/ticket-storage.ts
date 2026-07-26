@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { buildTicketOfferQr, createCheckInCode, createReceiptId } from '@/features/tickets/qr-payload';
-import { buildTicketProofQr } from '@/features/tickets/ticket-proof';
+import { buildTicketProofQr, getProofPurchaseKey, type TicketProofPlaintext } from '@/features/tickets/ticket-proof';
 import type {
   AttendeeRecord,
   PaymentSession,
@@ -15,6 +15,118 @@ const ATTENDEES_KEY = '@renopay/attendees_v1';
 const SESSIONS_KEY = '@renopay/sessions_v1';
 const PAID_SESSIONS_KEY = '@renopay/paid_sessions_v1';
 const CONSUMED_PROOFS_KEY = '@renopay/consumed_proofs_v1';
+const GATE_PROOF_DISPOSITIONS_KEY = '@renopay/gate_proof_dispositions_v1';
+
+export type GateProofDispositionStatus = 'admitted' | 'expired';
+
+export type GateProofDisposition = {
+  status: GateProofDispositionStatus;
+  at: string;
+  eventName?: string;
+  senderAddress?: string;
+  ticketId?: string;
+};
+
+type GateProofDispositionMap = Record<string, GateProofDisposition>;
+
+function isGateProofDisposition(value: unknown): value is GateProofDisposition {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<GateProofDisposition>;
+  return (record.status === 'admitted' || record.status === 'expired') && typeof record.at === 'string';
+}
+
+async function loadGateProofDispositionMap(): Promise<GateProofDispositionMap> {
+  const raw = await AsyncStorage.getItem(GATE_PROOF_DISPOSITIONS_KEY);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const map: GateProofDispositionMap = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof key === 'string' && isGateProofDisposition(value)) {
+        map[key] = value;
+      }
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+async function saveGateProofDispositionMap(map: GateProofDispositionMap): Promise<void> {
+  await AsyncStorage.setItem(GATE_PROOF_DISPOSITIONS_KEY, JSON.stringify(map));
+}
+
+async function loadLegacyConsumedTicketIds(): Promise<string[]> {
+  const raw = await AsyncStorage.getItem(CONSUMED_PROOFS_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function proofPurchaseKey(proof: Pick<TicketProofPlaintext, 'receiptId' | 'txHash'>): string {
+  return getProofPurchaseKey(proof);
+}
+
+export async function getGateProofDisposition(proof: TicketProofPlaintext): Promise<GateProofDisposition | null> {
+  const purchaseKey = proofPurchaseKey(proof);
+  const map = await loadGateProofDispositionMap();
+  if (map[purchaseKey]) return map[purchaseKey];
+
+  const legacyConsumed = await loadLegacyConsumedTicketIds();
+  if (legacyConsumed.includes(proof.ticketId)) {
+    return {
+      status: 'admitted',
+      at: '',
+      eventName: proof.eventName,
+      senderAddress: proof.senderAddress,
+      ticketId: proof.ticketId,
+    };
+  }
+  return null;
+}
+
+export async function setGateProofDisposition(
+  proof: TicketProofPlaintext,
+  status: GateProofDispositionStatus,
+): Promise<void> {
+  const purchaseKey = proofPurchaseKey(proof);
+  const map = await loadGateProofDispositionMap();
+  map[purchaseKey] = {
+    status,
+    at: new Date().toISOString(),
+    eventName: proof.eventName,
+    senderAddress: proof.senderAddress,
+    ticketId: proof.ticketId,
+  };
+  await saveGateProofDispositionMap(map);
+}
+
+export async function loadRecentGateProofDispositions(limit = 8): Promise<({ purchaseKey: string } & GateProofDisposition)[]> {
+  const map = await loadGateProofDispositionMap();
+  return Object.entries(map)
+    .map(([purchaseKey, disposition]) => ({ purchaseKey, ...disposition }))
+    .sort((left, right) => right.at.localeCompare(left.at))
+    .slice(0, limit);
+}
+
+/** @deprecated Use getGateProofDisposition with purchase key instead. */
+export async function isTicketProofConsumed(ticketId: string): Promise<boolean> {
+  const legacyConsumed = await loadLegacyConsumedTicketIds();
+  return legacyConsumed.includes(ticketId);
+}
+
+/** @deprecated Use setGateProofDisposition instead. */
+export async function consumeTicketProof(ticketId: string): Promise<void> {
+  const legacyConsumed = await loadLegacyConsumedTicketIds();
+  if (!legacyConsumed.includes(ticketId)) {
+    await AsyncStorage.setItem(CONSUMED_PROOFS_KEY, JSON.stringify([ticketId, ...legacyConsumed]));
+  }
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -71,32 +183,14 @@ export async function saveAttendees(attendees: AttendeeRecord[]): Promise<void> 
 }
 
 export async function clearTicketData(): Promise<void> {
-  await AsyncStorage.multiRemove([TICKETS_KEY, ATTENDEES_KEY, SESSIONS_KEY, PAID_SESSIONS_KEY, CONSUMED_PROOFS_KEY]);
-}
-
-export async function isTicketProofConsumed(ticketId: string): Promise<boolean> {
-  const raw = await AsyncStorage.getItem(CONSUMED_PROOFS_KEY);
-  if (!raw) return false;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) && parsed.includes(ticketId);
-  } catch {
-    return false;
-  }
-}
-
-export async function consumeTicketProof(ticketId: string): Promise<void> {
-  const raw = await AsyncStorage.getItem(CONSUMED_PROOFS_KEY);
-  let consumed: string[] = [];
-  try {
-    const parsed = raw ? JSON.parse(raw) as unknown : [];
-    consumed = Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
-  } catch {
-    consumed = [];
-  }
-  if (!consumed.includes(ticketId)) {
-    await AsyncStorage.setItem(CONSUMED_PROOFS_KEY, JSON.stringify([ticketId, ...consumed]));
-  }
+  await AsyncStorage.multiRemove([
+    TICKETS_KEY,
+    ATTENDEES_KEY,
+    SESSIONS_KEY,
+    PAID_SESSIONS_KEY,
+    CONSUMED_PROOFS_KEY,
+    GATE_PROOF_DISPOSITIONS_KEY,
+  ]);
 }
 
 export async function loadPaidSessions(): Promise<string[]> {
@@ -242,7 +336,10 @@ export async function mintReceivedTicketFromMatch(params: { match: PublishedMatc
     matchSaleAddress: params.match.saleAddress, matchId: params.match.matchId, createdAt: timestamp, updatedAt: timestamp,
   };
   const proofQr = await buildTicketProofQr(ticket);
-  return addReceivedTicket(proofQr ? { ...ticket, ticketQrPayload: proofQr } : ticket);
+  if (!proofQr) {
+    throw new Error('Unable to build verification QR for this match ticket.');
+  }
+  return addReceivedTicket({ ...ticket, ticketQrPayload: proofQr });
 }
 
 export async function addAttendee(attendee: AttendeeRecord): Promise<AttendeeRecord[]> {

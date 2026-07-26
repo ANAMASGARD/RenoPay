@@ -56,7 +56,10 @@ export async function mintReceivedTicketFromQr(params: {
   );
 
   const ticketQrPayload = await buildTicketProofQr(ticket);
-  const ticketWithProof = ticketQrPayload ? { ...ticket, ticketQrPayload } : ticket;
+  if (!ticketQrPayload) {
+    throw new Error('Unable to build verification QR for this ticket.');
+  }
+  const ticketWithProof = { ...ticket, ticketQrPayload };
 
   await addReceivedTicket(ticketWithProof);
   return ticketWithProof;

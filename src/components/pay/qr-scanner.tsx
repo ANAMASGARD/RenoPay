@@ -8,9 +8,10 @@ import { RenoPayBrand } from '@/constants/renopay-brand';
 type QrScannerProps = {
   onScan: (data: string) => void;
   onClose: () => void;
+  hint?: string;
 };
 
-export function QrScanner({ onScan, onClose }: QrScannerProps) {
+export function QrScanner({ onScan, onClose, hint = 'Align payment QR inside the frame' }: QrScannerProps) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
@@ -59,7 +60,7 @@ export function QrScanner({ onScan, onClose }: QrScannerProps) {
       />
       <View style={styles.overlay}>
         <View style={styles.frame} />
-        <Text style={styles.hint}>Align payment QR inside the frame</Text>
+        <Text style={styles.hint}>{hint}</Text>
         <Pressable
           accessibilityRole="button"
           onPress={() => setTorchOn((value) => !value)}

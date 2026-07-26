@@ -17,7 +17,8 @@ Current engineering handoff for the WDK-only ticket-payment gateway.
 - **Marker persistence:** Map markers are cached in AsyncStorage and rehydrated from locally saved ticket locations before RPC sync. On-chain matches remain the source of truth when available, while cached/local pins survive app updates and temporary indexing/RPC gaps.
 - **Map purchase checkout:** `BUY 1` routes into the fan Pay tab with an on-screen checkout QR and explicit confirmation — **no payment QR scan required** (remote fans in another city can buy from the map pin). A successful `MatchSale.buy` mints an encrypted, hash-verified entry proof QR locally with the real stadium coordinates; no ticket is shown before a WDK transaction hash exists.
 - **Tickets → Map:** Fan ticket tap offers **View on map** (alongside verification QR / share). Uses `resolveTicketLocation()` — explicit `ticket.location` first, then Indian stadium venue fallback — and deep-links Map with `focusMatchId` + coordinates. Map flies to the pin and selects the match card.
-- **Club verification:** Verify opens the same Expo camera scanner used by Pay. It decrypts and hash-checks the proof QR, enforces the event end time, and consumes each proof once in local gate storage. Issued also watches `TicketsPurchased` logs directly and lists observed buyers without a backend.
+- **Club verification:** Verify opens the camera scanner. After decrypt + hash check, the club chooses **VERIFY** (admit) or **EXPIRE** (void). Both mark the proof unusable on **this gate device** using a purchase-unique key (`receiptId`, else `txHash`) — not the shared offer `ticketId`. Do not mutate the club issued ticket on scan. The on-chain attendee list below is separate from gate actions. Issued watches `TicketsPurchased` logs directly.
+- **Verification QR scan reliability:** Fan **Show verification QR** uses a large modal (~280–340px) with ECC level `L` so dense encrypted proofs (~1100+ chars) remain camera-scannable. Club errors distinguish wrong issuer wallet, payment-QR-vs-proof mixups, and incomplete scans. Gatekeeper wallet must match the ticket issuer shown on the fan modal.
 - **Club templates/location:** Ticket creation includes 13 demo templates (10 Indian stadium locations), Mapbox venue search suggestions, direct latitude/longitude entry, exact pin zooming, and a red selected-location marker.
 - **On-chain match registry:** `RenoPayMatchRegistry` is deployed on Sepolia at `0x5311831CDD2Cd7089e0433dA80C5e160Bed7e9a3` (deployment block `11353499`). Source is `contracts/src/RenoPayMatchRegistry.sol`; deployment helper is `scripts/deploy-match-registry.mjs`.
 - **Fast publish behavior:** WDK may return a UserOperation hash before public RPC indexing. Ticket creation saves immediately after WDK accepts the transaction and stores `registryTxHash`; receipt/event lookup is opportunistic, and Map log discovery picks up `MatchPosted` asynchronously. Do not reintroduce a long blocking receipt wait in the create flow.
@@ -72,21 +73,21 @@ Current engineering handoff for the WDK-only ticket-payment gateway.
 
 ## Verification and release
 
-- `npm run verify` passed: Expo lint, TypeScript, and **56 Vitest tests**.
-- Tests cover payment preflight/send, QR validation/encryption, payment sessions, treasury swap helpers, wallet utilities, map utils, match-storage, registry incremental discovery, and USDT funding / paymaster error helpers.
+- `npm run verify` passed: Expo lint, TypeScript, and **60 Vitest tests** (includes gate proof disposition + encrypted QR).
+- Tests cover payment preflight/send, QR validation/encryption, gate proof disposition, payment sessions, treasury swap helpers, wallet utilities, map utils, match-storage, registry incremental discovery, and USDT funding / paymaster error helpers.
 - WDK bundle regenerated successfully.
 - Registry deployment bytecode was verified on Sepolia after deployment. Public app configuration lives in ignored `.env.local` as `EXPO_PUBLIC_MATCH_REGISTRY_ADDRESS`, `EXPO_PUBLIC_MATCH_REGISTRY_DEPLOYMENT_BLOCK`, and `EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN`.
 
 ### Local standalone APK (not published)
 
-Latest local build includes **2s Map incremental discovery**, **Tickets → View on map**, and **Map BUY with real stadium coordinates** (no QR scan required). It was **not** uploaded to GitHub — sideload from disk only.
+Latest local build (2026-07-26 ~18:05 IST) includes **2s Map incremental discovery**, **Tickets → View on map**, **Map BUY with real stadium coordinates**, **Club VERIFY/EXPIRE** (purchase-keyed gate disposition), and **larger Fan verification QR** (ECC `L`) for reliable cross-phone scans. It was **not** uploaded to GitHub — sideload from disk only.
 
 | Field | Value |
 |---|---|
 | **Absolute path** | `/home/linux/Downloads/RenoPay/android/app/build/outputs/apk/release/app-release.apk` |
 | **Relative path** | `android/app/build/outputs/apk/release/app-release.apk` |
 | **Size** | 198 MB |
-| **SHA-256** | `8520a1bc61e725f00a60780e0bf68077ca9280b955b70d0bf3fcfcb5ee965265` |
+| **SHA-256** | `b236c49ec7162deab45b97bc302566377f1c136e0e0213624a4ec6aa4de159bc` |
 | **Package ID** | `com.anonymous.renopay` |
 | **Rebuild** | `source scripts/android-env.sh && set -a && source .env.local && set +a && npm run android:standalone-apk` |
 
@@ -145,6 +146,7 @@ The one-time proof consume marker is currently local to the verifying gate devic
 - Unlock wallet → Settings → COPY ADDRESS → Candide mock USDT faucet → confirm USDT balance &gt; 0 before Create Ticket.
 - **Map demo (two phones):** Fan leaves **Map** tab open. Club publishes a ticket. Fan should see the red pin within ~2–4s without leaving Map. Fan can **BUY 1** without scanning a gate QR (WDK MatchSale on Sepolia).
 - **Tickets → Map demo:** After purchase, tap ticket → **View on map** → Map centers on the match pin.
+- **Verify demo:** Club unlocks the **issuer** wallet. Fan opens Tickets → **Show verification QR** (large modal, not the tiny card QR). Club Verify scans that proof → **VERIFY** or **EXPIRE**. Re-scan same purchase → already handled. Second fan with a different receipt for the same gate offer can still verify.
 - Fast create path: select an Indian stadium template, confirm the red pin/venue, publish, and continue immediately after WDK accepts the UserOperation.
 - If the registry alert appears, restart Metro with `npm start -- --clear`; standalone APKs must be rebuilt after `.env.local` changes.
 - `SEPOLIA_DEPLOYER_PRIVATE_KEY` is deployment-only and must never be committed or shipped in the app.
@@ -153,4 +155,6 @@ The one-time proof consume marker is currently local to the verifying gate devic
 
 - Fast on-chain Map discovery is implemented in app code only — **no new registry contract / redeploy**. Same Sepolia address `0x5311831CDD2Cd7089e0433dA80C5e160Bed7e9a3`.
 - Vitest covers `computeIncrementalFromBlock` in `src/features/matches/__tests__/registry-discovery.test.ts`.
+- Gate dispositions live in `@renopay/gate_proof_dispositions_v1` keyed by purchase id (`receiptId` / `txHash`); see `gate-proof-disposition.test.ts`.
+- Dense encrypted proof QRs failed at ~240px with higher ECC; Fan modal now uses ECC `L` + larger size. Physical two-phone camera scan still needs manual confirmation.
 - Do not claim sub-second visibility before Sepolia indexes the UserOp; honest SLA is ~2–4s after inclusion while Map stays focused.

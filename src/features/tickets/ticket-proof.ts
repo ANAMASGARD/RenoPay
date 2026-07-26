@@ -2,6 +2,7 @@ import * as Crypto from 'expo-crypto';
 import { z } from 'zod';
 
 import { decryptJson, encryptJson, normalizeReceiverAddress } from '@/features/tickets/qr-crypto';
+import { shortAddress } from '@/features/tickets/payment-helpers';
 import type { TicketRecord } from '@/features/tickets/ticket-types';
 
 const PROOF_KIND = 'renopay-ticket-proof-encrypted' as const;
@@ -163,27 +164,65 @@ export async function buildTicketProofQr(ticket: TicketRecord): Promise<string |
   return JSON.stringify(shell);
 }
 
+export function getProofPurchaseKey(proof: Pick<TicketProofPlaintext, 'receiptId' | 'txHash'>): string {
+  const receiptId = proof.receiptId?.trim();
+  if (receiptId) return receiptId;
+  const txHash = proof.txHash?.trim();
+  if (txHash) return txHash;
+  throw new Error('Proof missing purchase key.');
+}
+
 export async function verifyTicketProofPlaintext(proof: TicketProofPlaintext): Promise<boolean> {
   const { payloadHash, ...rest } = proof;
   const expected = await hashProofFields(rest as Record<string, unknown>);
   return expected === payloadHash;
 }
 
-/** Future gatekeeper scan-to-verify entry point. */
+/** Gatekeeper scan-to-verify entry point. */
 export async function parseAndVerifyTicketProof(
   raw: string,
   gatekeeperAddress: string,
 ): Promise<{ ok: true; proof: TicketProofPlaintext } | { ok: false; reason: string }> {
   try {
-    const parsed = JSON.parse(raw) as unknown;
+    const trimmed = raw.trim();
+    if (!trimmed.startsWith('{')) {
+      return {
+        ok: false,
+        reason: 'QR could not be read as a Reno Pay proof. Ask the fan to open the large verification QR in Tickets (not the small card preview).',
+      };
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed) as unknown;
+    } catch {
+      return {
+        ok: false,
+        reason: 'QR scan was incomplete. Hold steady and scan the large fan verification QR again.',
+      };
+    }
+
     const shell = encryptedTicketProofShellSchema.safeParse(parsed);
     if (!shell.success) {
+      const maybeKind = typeof parsed === 'object' && parsed && 'kind' in parsed
+        ? String((parsed as { kind?: unknown }).kind ?? '')
+        : '';
+      if (maybeKind.includes('session') || maybeKind.includes('payment') || maybeKind.includes('offer')) {
+        return {
+          ok: false,
+          reason: 'That is a payment/offer QR. Scan the fan verification QR from Tickets instead.',
+        };
+      }
       return { ok: false, reason: 'Not a Reno Pay ticket verification QR.' };
     }
 
     const normalizedGatekeeper = normalizeReceiverAddress(gatekeeperAddress);
-    if (normalizeReceiverAddress(shell.data.receiverAddress) !== normalizedGatekeeper) {
-      return { ok: false, reason: 'This ticket was not issued by your gate session.' };
+    const issuer = normalizeReceiverAddress(shell.data.receiverAddress);
+    if (issuer !== normalizedGatekeeper) {
+      return {
+        ok: false,
+        reason: `Wrong club wallet. Ticket issuer is ${shortAddress(shell.data.receiverAddress)}; this phone is ${shortAddress(gatekeeperAddress)}. Unlock the issuer wallet, then scan again.`,
+      };
     }
 
     const decrypted = decryptJson<Record<string, unknown>>({
@@ -196,7 +235,7 @@ export async function parseAndVerifyTicketProof(
     });
 
     if (!decrypted) {
-      return { ok: false, reason: 'Unable to decrypt ticket proof — QR may be damaged.' };
+      return { ok: false, reason: 'Unable to decrypt ticket proof — QR may be damaged. Ask the fan to reopen the large verification QR.' };
     }
 
     const proof = ticketProofPlaintextSchema.safeParse(decrypted);
@@ -214,7 +253,7 @@ export async function parseAndVerifyTicketProof(
     }
 
     if (proof.data.endAt && new Date(proof.data.endAt).getTime() <= Date.now()) {
-      return { ok: false, reason: 'This ticket has expired.' };
+      return { ok: false, reason: 'This ticket has expired (event end time passed).' };
     }
 
     return { ok: true, proof: proof.data };

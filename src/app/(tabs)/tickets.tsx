@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Alert, Modal, Pressable, Share, StyleSheet, Text, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { Alert, Modal, Pressable, Share, StyleSheet, Text, useWindowDimensions } from 'react-native';
 
 import { PitchScreen } from '@/components/layout/pitch-screen';
 import { QrCodeView } from '@/components/tickets/qr-code-view';
@@ -26,9 +26,14 @@ function shareEntryPass(ticket: TicketRecord) {
 
 export default function TicketsScreen() {
   const router = useRouter();
+  const { width: windowWidth } = useWindowDimensions();
   const { tickets, loading } = useTickets();
-  const [verificationQr, setVerificationQr] = useState<string | null>(null);
+  const [verificationTicket, setVerificationTicket] = useState<TicketRecord | null>(null);
   const received = tickets.filter((ticket) => ticket.kind === 'received');
+  const verificationQrSize = useMemo(
+    () => Math.min(Math.max(windowWidth - 56, 280), 340),
+    [windowWidth],
+  );
 
   const openTicketOnMap = (ticket: TicketRecord) => {
     const location = resolveTicketLocation(ticket);
@@ -47,6 +52,14 @@ export default function TicketsScreen() {
     } as never);
   };
 
+  const openVerificationQr = (ticket: TicketRecord) => {
+    if (!ticket.ticketQrPayload) {
+      Alert.alert('No verification QR', 'This ticket has no gate proof QR. Re-buy or re-pay to mint one.');
+      return;
+    }
+    setVerificationTicket(ticket);
+  };
+
   return (
     <PitchScreen>
       <Text style={styles.heading}>TICKETS</Text>
@@ -62,7 +75,7 @@ export default function TicketsScreen() {
           <TicketCard
             key={ticket.ticketId}
             ticket={ticket}
-            onQrPress={ticket.ticketQrPayload ? () => setVerificationQr(ticket.ticketQrPayload!) : undefined}
+            onQrPress={ticket.ticketQrPayload ? () => openVerificationQr(ticket) : undefined}
             onPress={() => {
               const location = resolveTicketLocation(ticket);
               const actions = [
@@ -72,7 +85,7 @@ export default function TicketsScreen() {
                 ticket.ticketQrPayload
                   ? {
                       text: 'Show verification QR',
-                      onPress: () => setVerificationQr(ticket.ticketQrPayload!),
+                      onPress: () => openVerificationQr(ticket),
                     }
                   : null,
                 ticket.kind === 'received'
@@ -99,16 +112,30 @@ export default function TicketsScreen() {
       )}
 
       <Modal
-        visible={verificationQr !== null}
+        visible={verificationTicket !== null}
         transparent
         animationType="fade"
-        onRequestClose={() => setVerificationQr(null)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setVerificationQr(null)}>
-          <View style={styles.modalCard}>
+        onRequestClose={() => setVerificationTicket(null)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setVerificationTicket(null)}>
+          <Pressable style={styles.modalCard} onPress={(event) => event.stopPropagation()}>
             <Text style={styles.modalTitle}>VERIFICATION QR</Text>
-            <Text style={styles.modalHint}>Show this at the gate for future scan-to-verify.</Text>
-            {verificationQr ? <QrCodeView value={verificationQr} size={240} /> : null}
-          </View>
+            <Text style={styles.modalHint}>
+              Hold this large QR steady for the club Verify camera. Do not scan the Gate payment QR.
+            </Text>
+            {verificationTicket?.ticketQrPayload ? (
+              <QrCodeView
+                value={verificationTicket.ticketQrPayload}
+                size={verificationQrSize}
+                errorCorrectionLevel="L"
+              />
+            ) : null}
+            <Text style={styles.modalIssuer}>
+              Club wallet must be {shortAddress(verificationTicket?.receiverAddress)}
+            </Text>
+            <Pressable accessibilityRole="button" onPress={() => setVerificationTicket(null)} style={styles.modalClose}>
+              <Text style={styles.modalCloseText}>CLOSE</Text>
+            </Pressable>
+          </Pressable>
         </Pressable>
       </Modal>
     </PitchScreen>
@@ -137,17 +164,18 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.75)',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
+    padding: 16,
   },
   modalCard: {
     borderWidth: 3,
     borderColor: RenoPayBrand.border,
     borderRadius: 16,
     backgroundColor: RenoPayBrand.backgroundElevated,
-    padding: 20,
+    padding: 16,
     alignItems: 'center',
     gap: 12,
-    maxWidth: 320,
+    width: '100%',
+    maxWidth: 400,
   },
   modalTitle: {
     color: RenoPayBrand.primary,
@@ -160,5 +188,26 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
     lineHeight: 18,
+  },
+  modalIssuer: {
+    color: RenoPayBrand.foreground,
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  modalClose: {
+    marginTop: 4,
+    borderWidth: 2,
+    borderColor: RenoPayBrand.border,
+    borderRadius: 8,
+    backgroundColor: RenoPayBrand.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  modalCloseText: {
+    color: RenoPayBrand.border,
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.8,
   },
 });
