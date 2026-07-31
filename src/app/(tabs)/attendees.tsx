@@ -20,7 +20,7 @@ import { useAccount } from '@/features/wdk/wdk-hooks';
 type RecentDisposition = { purchaseKey: string } & GateProofDisposition;
 
 export default function AttendeesScreen() {
-  const { attendees, loading } = useTickets();
+  const { attendees, loading, refresh } = useTickets();
   const isFocused = useIsFocused();
   const { address } = useAccount({ network: 'ethereum', accountIndex: 0 });
   const [scanning, setScanning] = useState(false);
@@ -38,6 +38,7 @@ export default function AttendeesScreen() {
   const finishGateAction = (title: string, message: string) => {
     Alert.alert(title, message);
     void refreshDispositions();
+    void refresh();
     setScanKey((value) => value + 1);
   };
 
@@ -58,9 +59,9 @@ export default function AttendeesScreen() {
   };
 
   const verifyTicket = async (raw: string) => {
-    setScanning(false);
     if (!address) {
       Alert.alert('Wallet required', 'Unlock the club wallet before verifying tickets.');
+      setScanKey((value) => value + 1);
       return;
     }
 
@@ -74,13 +75,16 @@ export default function AttendeesScreen() {
     const disposition = await getGateProofDisposition(result.proof);
     if (disposition?.status === 'admitted') {
       Alert.alert('Already verified', 'This entry proof was already admitted at this gate device.');
+      setScanKey((value) => value + 1);
       return;
     }
     if (disposition?.status === 'expired') {
       Alert.alert('Already expired', 'This entry proof was already voided at this gate device.');
+      setScanKey((value) => value + 1);
       return;
     }
 
+    setScanning(false);
     Alert.alert(
       result.proof.eventName,
       [
@@ -103,7 +107,8 @@ export default function AttendeesScreen() {
       <View style={styles.scannerRoot}>
         <QrScanner
           key={scanKey}
-          hint="Align the fan verification QR from Tickets inside the frame"
+          hint="Align the fan large verification QR from Tickets inside the frame"
+          idleHint="Move closer, hold steady, and try TORCH ON if nothing happens."
           onScan={(raw) => void verifyTicket(raw)}
           onClose={() => setScanning(false)}
         />
@@ -116,7 +121,9 @@ export default function AttendeesScreen() {
       <Text style={styles.heading}>VERIFY</Text>
 
       <Text style={styles.sectionTitle}>GATE SCAN</Text>
-      <Text style={styles.verifyCopy}>Scan the fan large verification QR from Tickets. Club wallet must match the ticket issuer shown on that QR.</Text>
+      <Text style={styles.verifyCopy}>
+        Scan the fan large verification QR from Tickets. Club wallet must match the ticket issuer shown on that QR.
+      </Text>
       <View style={styles.scanButtonWrap}>
         <View style={styles.scanButtonShadow} />
         <Pressable accessibilityRole="button" onPress={() => setScanning(true)} style={styles.scanButton}>

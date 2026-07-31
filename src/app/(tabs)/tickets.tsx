@@ -9,6 +9,7 @@ import { RenoPayInlineLoader } from '@/components/ui/renopay-inline-loader';
 import { RenoPayBrand } from '@/constants/renopay-brand';
 import { resolveTicketLocation } from '@/features/matches/match-storage';
 import { shortAddress } from '@/features/tickets/payment-helpers';
+import { ensureCompactTicketProofQr } from '@/features/tickets/ticket-storage';
 import type { TicketRecord } from '@/features/tickets/ticket-types';
 import { useTickets } from '@/features/tickets/tickets-context';
 
@@ -24,15 +25,20 @@ function shareEntryPass(ticket: TicketRecord) {
   Share.share({ message: lines.join('\n') }).catch(() => undefined);
 }
 
+function isGateProofClosed(ticket: TicketRecord): boolean {
+  return ticket.gateDisposition !== undefined || ticket.status === 'checked_in';
+}
+
 export default function TicketsScreen() {
   const router = useRouter();
-  const { width: windowWidth } = useWindowDimensions();
-  const { tickets, loading } = useTickets();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const { tickets, loading, refresh } = useTickets();
   const [verificationTicket, setVerificationTicket] = useState<TicketRecord | null>(null);
+  const [remintingProof, setRemintingProof] = useState(false);
   const received = tickets.filter((ticket) => ticket.kind === 'received');
   const verificationQrSize = useMemo(
-    () => Math.min(Math.max(windowWidth - 56, 280), 340),
-    [windowWidth],
+    () => Math.min(Math.max(windowWidth - 48, 300), Math.min(windowWidth - 32, windowHeight * 0.42)),
+    [windowHeight, windowWidth],
   );
 
   const openTicketOnMap = (ticket: TicketRecord) => {
@@ -53,11 +59,29 @@ export default function TicketsScreen() {
   };
 
   const openVerificationQr = (ticket: TicketRecord) => {
+    if (isGateProofClosed(ticket)) {
+      Alert.alert(
+        ticket.gateDisposition === 'expired' ? 'Ticket expired' : 'Ticket already used',
+        ticket.gateDisposition === 'expired'
+          ? 'This entry proof was voided at the gate and cannot be scanned again.'
+          : 'This entry proof was already verified at the gate.',
+      );
+      return;
+    }
     if (!ticket.ticketQrPayload) {
       Alert.alert('No verification QR', 'This ticket has no gate proof QR. Re-buy or re-pay to mint one.');
       return;
     }
     setVerificationTicket(ticket);
+    setRemintingProof(true);
+    void ensureCompactTicketProofQr(ticket)
+      .then((updated) => {
+        setVerificationTicket(updated);
+        return refresh();
+      })
+      .finally(() => {
+        setRemintingProof(false);
+      });
   };
 
   return (
@@ -75,14 +99,14 @@ export default function TicketsScreen() {
           <TicketCard
             key={ticket.ticketId}
             ticket={ticket}
-            onQrPress={ticket.ticketQrPayload ? () => openVerificationQr(ticket) : undefined}
+            onQrPress={ticket.ticketQrPayload && !isGateProofClosed(ticket) ? () => openVerificationQr(ticket) : undefined}
             onPress={() => {
               const location = resolveTicketLocation(ticket);
               const actions = [
                 location
                   ? { text: 'View on map', onPress: () => openTicketOnMap(ticket) }
                   : null,
-                ticket.ticketQrPayload
+                ticket.ticketQrPayload && !isGateProofClosed(ticket)
                   ? {
                       text: 'Show verification QR',
                       onPress: () => openVerificationQr(ticket),
@@ -98,7 +122,7 @@ export default function TicketsScreen() {
                 ticket.eventName,
                 [
                   `${ticket.homeTeam} vs ${ticket.awayTeam}`,
-                  `Status: ${ticket.status}`,
+                  `Status: ${ticket.gateDisposition === 'expired' ? 'EXPIRED' : ticket.gateDisposition === 'admitted' ? 'VERIFIED' : ticket.status}`,
                   ticket.txHash ? `Tx: ${shortAddress(ticket.txHash)}` : null,
                   ticket.receiptId ? `Receipt: ${ticket.receiptId}` : null,
                 ]
@@ -120,13 +144,15 @@ export default function TicketsScreen() {
           <Pressable style={styles.modalCard} onPress={(event) => event.stopPropagation()}>
             <Text style={styles.modalTitle}>VERIFICATION QR</Text>
             <Text style={styles.modalHint}>
-              Hold this large QR steady for the club Verify camera. Do not scan the Gate payment QR.
+              Show this to Club → Verify on the gate phone. Hold steady inside the scanner frame.
             </Text>
-            {verificationTicket?.ticketQrPayload ? (
+            {remintingProof ? <RenoPayInlineLoader label="PREPARING QR" height={verificationQrSize} /> : null}
+            {!remintingProof && verificationTicket?.ticketQrPayload ? (
               <QrCodeView
                 value={verificationTicket.ticketQrPayload}
                 size={verificationQrSize}
                 errorCorrectionLevel="L"
+                quietZone={12}
               />
             ) : null}
             <Text style={styles.modalIssuer}>
@@ -175,7 +201,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     width: '100%',
-    maxWidth: 400,
+    maxWidth: 420,
   },
   modalTitle: {
     color: RenoPayBrand.primary,

@@ -10,6 +10,8 @@ type QrCodeViewProps = {
   size?: number;
   /** Dense encrypted proof QRs should use L so modules stay large enough to scan. */
   errorCorrectionLevel?: 'L' | 'M' | 'Q' | 'H';
+  /** Extra cream padding around modules for camera quiet-zone. */
+  quietZone?: number;
 };
 
 type SvgRect = {
@@ -38,7 +40,7 @@ function buildMatrix(value: string, errorCorrectionLevel: 'L' | 'M' | 'Q' | 'H')
   }
 }
 
-function matrixToRunLengthRects(matrix: boolean[][], cellSize: number): SvgRect[] {
+function matrixToRunLengthRects(matrix: boolean[][], cellSize: number, offset: number): SvgRect[] {
   const rects: SvgRect[] = [];
   for (let row = 0; row < matrix.length; row += 1) {
     let col = 0;
@@ -53,8 +55,8 @@ function matrixToRunLengthRects(matrix: boolean[][], cellSize: number): SvgRect[
       }
       rects.push({
         key: `${row}-${start}`,
-        x: start * cellSize,
-        y: row * cellSize,
+        x: offset + start * cellSize,
+        y: offset + row * cellSize,
         width: (col - start) * cellSize,
         height: cellSize,
       });
@@ -67,14 +69,16 @@ export const QrCodeView = memo(function QrCodeView({
   value,
   size = 160,
   errorCorrectionLevel = 'M',
+  quietZone = 0,
 }: QrCodeViewProps) {
   const matrix = useMemo(() => buildMatrix(value, errorCorrectionLevel), [errorCorrectionLevel, value]);
   const moduleCount = matrix.length;
-  const cellSize = moduleCount > 0 ? size / moduleCount : 0;
+  const innerSize = Math.max(size - quietZone * 2, 0);
+  const cellSize = moduleCount > 0 ? innerSize / moduleCount : 0;
 
   const rects = useMemo(
-    () => (moduleCount > 0 ? matrixToRunLengthRects(matrix, cellSize) : []),
-    [cellSize, matrix, moduleCount],
+    () => (moduleCount > 0 ? matrixToRunLengthRects(matrix, cellSize, quietZone) : []),
+    [cellSize, matrix, moduleCount, quietZone],
   );
 
   if (moduleCount === 0) {

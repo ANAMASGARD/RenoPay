@@ -8,6 +8,7 @@ import {
   type QrPayload,
   type QrPayloadEnvelope,
 } from '@/features/tickets/qr-payload';
+import { isProofQrPayload } from '@/features/tickets/ticket-proof';
 import {
   getTicketById,
   isSessionPaid,
@@ -37,6 +38,12 @@ export type ValidateSessionResult =
 
 export async function validateAndJoinSession(raw: string): Promise<ValidateSessionResult> {
   const trimmed = raw.trim();
+  if (isProofQrPayload(trimmed)) {
+    return {
+      ok: false,
+      reason: 'That is a fan verification QR. Switch to Club mode → Verify to scan entry proofs — not Pay.',
+    };
+  }
   const parsed = await parseAndDecryptPaymentQr(trimmed);
   if (!parsed) {
     return { ok: false, reason: 'This QR is not a Reno Pay payment session.' };

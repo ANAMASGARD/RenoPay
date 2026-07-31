@@ -10,8 +10,10 @@ import {
   type TicketProofPlaintext,
 } from '@/features/tickets/ticket-proof';
 import {
+  applyGateDispositionToLocalTicket,
   clearTicketData,
   getGateProofDisposition,
+  loadTickets,
   proofPurchaseKey,
   setGateProofDisposition,
 } from '@/features/tickets/ticket-storage';
@@ -106,5 +108,32 @@ describe('gate proof dispositions', () => {
     await AsyncStorage.setItem('@renopay/consumed_proofs_v1', JSON.stringify(['ticket-legacy']));
 
     expect(await getGateProofDisposition(proof)).toMatchObject({ status: 'admitted', ticketId: 'ticket-legacy' });
+  });
+
+  it('updates matching received ticket after VERIFY or EXPIRE', async () => {
+    const proof = await sampleProof({ receiptId: 'rcpt-local-status', txHash: '0xlocalstatus' });
+    const ticket = sampleIssuedTicket({
+      kind: 'received',
+      status: 'transferred',
+      ticketId: proof.ticketId,
+      sessionId: proof.sessionId,
+      senderAddress: proof.senderAddress,
+      txHash: proof.txHash,
+      receiptId: proof.receiptId,
+      quantity: 1,
+      remainingQuantity: 0,
+    });
+    await AsyncStorage.setItem('@renopay/tickets_v2', JSON.stringify([ticket]));
+
+    await applyGateDispositionToLocalTicket(proof, 'admitted');
+    let tickets = await loadTickets();
+    expect(tickets[0]?.gateDisposition).toBe('admitted');
+    expect(tickets[0]?.status).toBe('checked_in');
+    expect(tickets[0]?.checkedInAt).toBeTruthy();
+
+    await applyGateDispositionToLocalTicket(proof, 'expired');
+    tickets = await loadTickets();
+    expect(tickets[0]?.gateDisposition).toBe('expired');
+    expect(tickets[0]?.status).toBe('checked_in');
   });
 });

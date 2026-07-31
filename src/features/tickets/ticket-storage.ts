@@ -1,7 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { buildTicketOfferQr, createCheckInCode, createReceiptId } from '@/features/tickets/qr-payload';
-import { buildTicketProofQr, getProofPurchaseKey, type TicketProofPlaintext } from '@/features/tickets/ticket-proof';
+import {
+  buildTicketProofQr,
+  getProofPurchaseKey,
+  needsProofRemint,
+  type TicketProofPlaintext,
+} from '@/features/tickets/ticket-proof';
 import type {
   AttendeeRecord,
   PaymentSession,
@@ -90,6 +95,45 @@ export async function getGateProofDisposition(proof: TicketProofPlaintext): Prom
   return null;
 }
 
+function matchesProofPurchase(ticket: TicketRecord, proof: TicketProofPlaintext): boolean {
+  if (ticket.kind !== 'received') {
+    return false;
+  }
+  const receiptId = ticket.receiptId?.trim();
+  if (receiptId && receiptId === proof.receiptId.trim()) {
+    return true;
+  }
+  const txHash = ticket.txHash?.trim().toLowerCase();
+  return Boolean(txHash && txHash === proof.txHash.trim().toLowerCase());
+}
+
+export async function applyGateDispositionToLocalTicket(
+  proof: TicketProofPlaintext,
+  status: GateProofDispositionStatus,
+): Promise<TicketRecord[]> {
+  const tickets = await loadTickets();
+  const at = new Date().toISOString();
+  let changed = false;
+  const next = tickets.map((ticket) => {
+    if (!matchesProofPurchase(ticket, proof)) {
+      return ticket;
+    }
+    changed = true;
+    return {
+      ...ticket,
+      status: 'checked_in' as const,
+      checkedInAt: status === 'admitted' ? at : ticket.checkedInAt,
+      gateDisposition: status,
+      gateDispositionAt: at,
+      updatedAt: at,
+    };
+  });
+  if (changed) {
+    await saveTickets(next);
+  }
+  return next;
+}
+
 export async function setGateProofDisposition(
   proof: TicketProofPlaintext,
   status: GateProofDispositionStatus,
@@ -104,6 +148,41 @@ export async function setGateProofDisposition(
     ticketId: proof.ticketId,
   };
   await saveGateProofDispositionMap(map);
+  await applyGateDispositionToLocalTicket(proof, status);
+}
+
+export async function ensureCompactTicketProofQr(ticket: TicketRecord): Promise<TicketRecord> {
+  if (!canBuildTicketProofForRemint(ticket)) {
+    return ticket;
+  }
+  if (!needsProofRemint(ticket)) {
+    return ticket;
+  }
+  const proofQr = await buildTicketProofQr(ticket);
+  if (!proofQr) {
+    return ticket;
+  }
+  const updated: TicketRecord = {
+    ...ticket,
+    ticketQrPayload: proofQr,
+    updatedAt: nowIso(),
+  };
+  await upsertTicket(updated);
+  return updated;
+}
+
+function canBuildTicketProofForRemint(ticket: TicketRecord): boolean {
+  return (
+    ticket.kind === 'received' &&
+    typeof ticket.sessionId === 'string' &&
+    ticket.sessionId.length > 0 &&
+    typeof ticket.txHash === 'string' &&
+    ticket.txHash.length > 0 &&
+    typeof ticket.senderAddress === 'string' &&
+    ticket.senderAddress.length > 0 &&
+    typeof ticket.receiptId === 'string' &&
+    ticket.receiptId.length > 0
+  );
 }
 
 export async function loadRecentGateProofDispositions(limit = 8): Promise<({ purchaseKey: string } & GateProofDisposition)[]> {

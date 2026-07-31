@@ -18,6 +18,7 @@ import {
   buildEncryptedPaymentQrString,
   buildQrPayload,
 } from '@/features/tickets/qr-payload';
+import { buildTicketProofQr } from '@/features/tickets/ticket-proof';
 import {
   canFulfillPayment,
   fulfillPayment,
@@ -78,6 +79,27 @@ describe('payment-session', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain('already settled');
+    }
+  });
+
+  it('rejects fan verification QR on Pay scanner', async () => {
+    const ticket = sampleIssuedTicket({
+      kind: 'received',
+      status: 'transferred',
+      sessionId: 'session-proof-pay',
+      senderAddress: '0xSender0000000000000000000000000000000001',
+      txHash: '0xproofpay',
+      receiptId: 'rcpt-proof-pay',
+      quantity: 1,
+      remainingQuantity: 0,
+    });
+    const proofQr = await buildTicketProofQr(ticket);
+    expect(proofQr).toBeTruthy();
+
+    const result = await validateAndJoinSession(proofQr!);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain('Club mode');
     }
   });
 

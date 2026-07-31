@@ -41,6 +41,9 @@ export type TicketRecord = {
   imageUri?: string;
   ticketQrPayload?: string;
   checkedInAt?: string;
+  /** Device-local gate disposition after Club Verify scan on this phone. */
+  gateDisposition?: 'admitted' | 'expired';
+  gateDispositionAt?: string;
   createdAt: string;
   updatedAt: string;
 };

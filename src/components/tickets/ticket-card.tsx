@@ -13,8 +13,11 @@ type TicketCardProps = {
   onQrPress?: () => void;
 };
 
-function statusBadge(status: TicketRecord['status']): { label: string; color: string } {
-  switch (status) {
+function statusBadge(ticket: TicketRecord): { label: string; color: string } {
+  if (ticket.gateDisposition === 'expired') {
+    return { label: 'EXPIRED', color: RenoPayBrand.muted };
+  }
+  switch (ticket.status) {
     case 'draft':
       return { label: 'DRAFT', color: RenoPayBrand.muted };
     case 'awaiting_payment':
@@ -24,16 +27,20 @@ function statusBadge(status: TicketRecord['status']): { label: string; color: st
     case 'transferred':
       return { label: 'VALID', color: RenoPayBrand.accentGreen };
     case 'checked_in':
-      return { label: 'USED', color: RenoPayBrand.muted };
+      return {
+        label: ticket.gateDisposition === 'admitted' ? 'VERIFIED' : 'USED',
+        color: RenoPayBrand.muted,
+      };
     default: {
-      const _exhaustive: never = status;
+      const _exhaustive: never = ticket.status;
       return { label: _exhaustive, color: RenoPayBrand.muted };
     }
   }
 }
 
 export const TicketCard = memo(function TicketCard({ ticket, onPress, onQrPress }: TicketCardProps) {
-  const badge = statusBadge(ticket.status);
+  const badge = statusBadge(ticket);
+  const qrDisabled = !onQrPress || ticket.gateDisposition !== undefined || ticket.status === 'checked_in';
 
   const body = (
     <View style={styles.wrap}>
@@ -78,8 +85,17 @@ export const TicketCard = memo(function TicketCard({ ticket, onPress, onQrPress 
           <View style={styles.notchBottom} />
         </View>
 
-        <Pressable accessibilityRole={onQrPress ? 'button' : undefined} accessibilityLabel={onQrPress ? 'Expand ticket QR' : undefined} disabled={!onQrPress} onPress={onQrPress} style={styles.qrSlot}>
-          {ticket.ticketQrPayload ? <QrCodeView value={ticket.ticketQrPayload} size={88} /> : <MaterialCommunityIcons name="qrcode" size={64} color={RenoPayBrand.border} />}
+        <Pressable
+          accessibilityRole={onQrPress && !qrDisabled ? 'button' : undefined}
+          accessibilityLabel={onQrPress && !qrDisabled ? 'Expand ticket QR' : undefined}
+          disabled={qrDisabled}
+          onPress={qrDisabled ? undefined : onQrPress}
+          style={styles.qrSlot}>
+          {ticket.ticketQrPayload && !qrDisabled ? (
+            <QrCodeView value={ticket.ticketQrPayload} size={88} errorCorrectionLevel="L" />
+          ) : (
+            <MaterialCommunityIcons name="qrcode" size={64} color={RenoPayBrand.border} />
+          )}
         </Pressable>
       </View>
     </View>

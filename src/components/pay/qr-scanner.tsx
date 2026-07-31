@@ -1,20 +1,39 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { RenoPayInlineLoader } from '@/components/ui/renopay-inline-loader';
 import { RenoPayBrand } from '@/constants/renopay-brand';
 
+const IDLE_HINT_DELAY_MS = 4000;
+
 type QrScannerProps = {
   onScan: (data: string) => void;
   onClose: () => void;
   hint?: string;
+  idleHint?: string;
 };
 
-export function QrScanner({ onScan, onClose, hint = 'Align payment QR inside the frame' }: QrScannerProps) {
+export function QrScanner({
+  onScan,
+  onClose,
+  hint = 'Align payment QR inside the frame',
+  idleHint = 'Move closer and hold steady if nothing happens.',
+}: QrScannerProps) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  const [showIdleHint, setShowIdleHint] = useState(false);
+
+  useEffect(() => {
+    if (scanned) {
+      setShowIdleHint(false);
+      return;
+    }
+    setShowIdleHint(false);
+    const timer = setTimeout(() => setShowIdleHint(true), IDLE_HINT_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [scanned]);
 
   const handleBarcode = useCallback(
     ({ data }: { data: string }) => {
@@ -22,6 +41,7 @@ export function QrScanner({ onScan, onClose, hint = 'Align payment QR inside the
         return;
       }
       setScanned(true);
+      setShowIdleHint(false);
       onScan(data.trim());
     },
     [onScan, scanned],
@@ -61,6 +81,7 @@ export function QrScanner({ onScan, onClose, hint = 'Align payment QR inside the
       <View style={styles.overlay}>
         <View style={styles.frame} />
         <Text style={styles.hint}>{hint}</Text>
+        {showIdleHint && !scanned ? <Text style={styles.idleHint}>{idleHint}</Text> : null}
         <Pressable
           accessibilityRole="button"
           onPress={() => setTorchOn((value) => !value)}
@@ -73,7 +94,10 @@ export function QrScanner({ onScan, onClose, hint = 'Align payment QR inside the
         {scanned ? (
           <Pressable
             accessibilityRole="button"
-            onPress={() => setScanned(false)}
+            onPress={() => {
+              setScanned(false);
+              setShowIdleHint(false);
+            }}
             style={styles.rescanBtn}>
             <Text style={styles.closeText}>SCAN AGAIN</Text>
           </Pressable>
@@ -106,6 +130,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     textAlign: 'center',
+  },
+  idleHint: {
+    color: RenoPayBrand.primary,
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'center',
+    lineHeight: 18,
   },
   center: {
     flex: 1,

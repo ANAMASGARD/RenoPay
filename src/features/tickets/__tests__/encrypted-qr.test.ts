@@ -21,6 +21,7 @@ import {
   buildTicketProofQr,
   parseAndVerifyTicketProof,
 } from '@/features/tickets/ticket-proof';
+import { encryptJson } from '@/features/tickets/qr-crypto';
 import { mintReceivedTicketFromQr } from '@/features/tickets/ticket-mint';
 import type { TicketRecord } from '@/features/tickets/ticket-types';
 
@@ -79,6 +80,67 @@ describe('encrypted qr flows', () => {
       expect(verified.proof.ticketId).toBe(envelope.ticketId);
       expect(verified.proof.txHash).toBe('0xabc123');
       expect(verified.proof.checkInCode).toBe(envelope.checkInCode);
+    }
+  });
+
+  it('builds compact v3 proof QR that is smaller than legacy v2', async () => {
+    const ticket: TicketRecord = {
+      ...sampleIssuedTicket({ kind: 'received', status: 'transferred' }),
+      sessionId: 'session-compact',
+      senderAddress: '0xSender0000000000000000000000000000000001',
+      txHash: '0xabc123deadbeef',
+      receiptId: 'rcpt-compact',
+      quantity: 1,
+      remainingQuantity: 0,
+    };
+
+    const proofQr = await buildTicketProofQr(ticket);
+    expect(proofQr).toBeTruthy();
+    expect(proofQr!.length).toBeLessThan(950);
+    const parsed = JSON.parse(proofQr!) as { v?: number; k?: string };
+    expect(parsed.v).toBe(3);
+    expect(parsed.k).toBe('p');
+
+    const verified = await parseAndVerifyTicketProof(proofQr!, ticket.receiverAddress);
+    expect(verified.ok).toBe(true);
+  });
+
+  it('still verifies legacy v2 proof shells', async () => {
+    const ticket: TicketRecord = {
+      ...sampleIssuedTicket({ kind: 'received', status: 'transferred' }),
+      sessionId: 'session-legacy-v2',
+      senderAddress: '0xSender0000000000000000000000000000000001',
+      txHash: '0xlegacyv2hash',
+      receiptId: 'rcpt-legacy-v2',
+      quantity: 1,
+      remainingQuantity: 0,
+    };
+
+    const { buildTicketProofPlaintext } = await import('@/features/tickets/ticket-proof');
+    const fullPlaintext = await buildTicketProofPlaintext(ticket);
+    expect(fullPlaintext).toBeTruthy();
+
+    const shellBase = {
+      v: 2 as const,
+      kind: 'renopay-ticket-proof-encrypted' as const,
+      ticketId: fullPlaintext!.ticketId,
+      sessionId: fullPlaintext!.sessionId,
+      receiverAddress: fullPlaintext!.receiverAddress,
+    };
+    const encrypted = await encryptJson({
+      sessionId: fullPlaintext!.sessionId,
+      receiverAddress: fullPlaintext!.receiverAddress,
+      purpose: 'proof',
+      plaintext: fullPlaintext!,
+      aad: shellBase,
+    });
+    const legacyQr = JSON.stringify({ ...shellBase, nonce: encrypted.nonce, ciphertext: encrypted.ciphertext });
+    expect(legacyQr.length).toBeGreaterThan(950);
+
+    const verified = await parseAndVerifyTicketProof(legacyQr, ticket.receiverAddress);
+    expect(verified.ok).toBe(true);
+    if (verified.ok) {
+      expect(verified.proof.receiptId).toBe('rcpt-legacy-v2');
     }
   });
 

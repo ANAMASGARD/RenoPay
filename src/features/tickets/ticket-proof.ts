@@ -6,6 +6,9 @@ import { shortAddress } from '@/features/tickets/payment-helpers';
 import type { TicketRecord } from '@/features/tickets/ticket-types';
 
 const PROOF_KIND = 'renopay-ticket-proof-encrypted' as const;
+const COMPACT_PROOF_KIND = 'p' as const;
+/** v2 shells above this length are reminted to compact v3 on modal open. */
+export const LEGACY_PROOF_QR_LENGTH_THRESHOLD = 950;
 
 export const ticketProofPlaintextSchema = z.object({
   ticketId: z.string().min(1),
@@ -37,8 +40,36 @@ export const encryptedTicketProofShellSchema = z.object({
   ciphertext: z.string().min(1),
 });
 
+export const compactTicketProofShellSchema = z.object({
+  v: z.literal(3),
+  k: z.literal(COMPACT_PROOF_KIND),
+  i: z.string().min(1),
+  sid: z.string().min(1),
+  rcv: z.string().min(1),
+  n: z.string().min(1),
+  ct: z.string().min(1),
+});
+
+const compactTicketProofCipherSchema = z.object({
+  s: z.string().min(1),
+  t: z.string().min(1),
+  r: z.string().min(1),
+  c: z.string().min(1),
+  e: z.string().min(1),
+  h: z.string().min(1),
+  a: z.string().min(1),
+  v: z.string().min(1),
+  g: z.string().min(1),
+  seat: z.string().min(1),
+  p: z.string().min(1),
+  end: z.string().min(1).optional(),
+  paid: z.string().min(1),
+  hash: z.string().min(1),
+});
+
 export type TicketProofPlaintext = z.infer<typeof ticketProofPlaintextSchema>;
 export type EncryptedTicketProofShell = z.infer<typeof encryptedTicketProofShellSchema>;
+export type CompactTicketProofShell = z.infer<typeof compactTicketProofShellSchema>;
 
 const PROOF_HASH_FIELD_ORDER = [
   'ticketId',
@@ -58,6 +89,8 @@ const PROOF_HASH_FIELD_ORDER = [
   'endAt',
   'paidAt',
 ] as const;
+
+type ProofShell = EncryptedTicketProofShell | CompactTicketProofShell;
 
 function pickProofHashFields(source: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -80,7 +113,7 @@ async function hashProofFields(source: Record<string, unknown>): Promise<string>
   return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, canonical);
 }
 
-function buildProofShellAad(shell: EncryptedTicketProofShell): Record<string, unknown> {
+function buildLegacyProofShellAad(shell: EncryptedTicketProofShell): Record<string, unknown> {
   return {
     v: shell.v,
     kind: shell.kind,
@@ -88,6 +121,130 @@ function buildProofShellAad(shell: EncryptedTicketProofShell): Record<string, un
     sessionId: shell.sessionId,
     receiverAddress: normalizeReceiverAddress(shell.receiverAddress),
   };
+}
+
+function buildCompactProofShellAad(shell: CompactTicketProofShell): Record<string, unknown> {
+  return {
+    v: shell.v,
+    k: shell.k,
+    i: shell.i,
+    sid: shell.sid,
+    rcv: normalizeReceiverAddress(shell.rcv),
+  };
+}
+
+function shellTicketId(shell: ProofShell): string {
+  return shell.v === 3 ? shell.i : shell.ticketId;
+}
+
+function shellSessionId(shell: ProofShell): string {
+  return shell.v === 3 ? shell.sid : shell.sessionId;
+}
+
+function shellReceiverAddress(shell: ProofShell): string {
+  return shell.v === 3 ? shell.rcv : shell.receiverAddress;
+}
+
+function shellNonce(shell: ProofShell): string {
+  return shell.v === 3 ? shell.n : shell.nonce;
+}
+
+function shellCiphertext(shell: ProofShell): string {
+  return shell.v === 3 ? shell.ct : shell.ciphertext;
+}
+
+function buildProofShellAad(shell: ProofShell): Record<string, unknown> {
+  return shell.v === 3 ? buildCompactProofShellAad(shell) : buildLegacyProofShellAad(shell);
+}
+
+function compactCipherFromPlaintext(plaintext: TicketProofPlaintext): z.infer<typeof compactTicketProofCipherSchema> {
+  return {
+    s: plaintext.senderAddress,
+    t: plaintext.txHash,
+    r: plaintext.receiptId,
+    c: plaintext.checkInCode,
+    e: plaintext.eventName,
+    h: plaintext.homeTeam,
+    a: plaintext.awayTeam,
+    v: plaintext.venue,
+    g: plaintext.gate,
+    seat: plaintext.seatLabel,
+    p: plaintext.priceUsdt,
+    end: plaintext.endAt,
+    paid: plaintext.paidAt,
+    hash: plaintext.payloadHash,
+  };
+}
+
+function expandCompactCipherPlaintext(
+  shell: CompactTicketProofShell,
+  compact: z.infer<typeof compactTicketProofCipherSchema>,
+): TicketProofPlaintext {
+  return {
+    ticketId: shell.i,
+    sessionId: shell.sid,
+    receiverAddress: normalizeReceiverAddress(shell.rcv),
+    senderAddress: compact.s,
+    txHash: compact.t,
+    receiptId: compact.r,
+    checkInCode: compact.c,
+    eventName: compact.e,
+    homeTeam: compact.h,
+    awayTeam: compact.a,
+    venue: compact.v,
+    gate: compact.g,
+    seatLabel: compact.seat,
+    priceUsdt: compact.p,
+    endAt: compact.end,
+    paidAt: compact.paid,
+    payloadHash: compact.hash,
+  };
+}
+
+function parseProofShell(parsed: unknown): ProofShell | null {
+  const compact = compactTicketProofShellSchema.safeParse(parsed);
+  if (compact.success) {
+    return compact.data;
+  }
+  const legacy = encryptedTicketProofShellSchema.safeParse(parsed);
+  return legacy.success ? legacy.data : null;
+}
+
+export function isProofQrPayload(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{')) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) {
+      return false;
+    }
+    const record = parsed as Record<string, unknown>;
+    if (record.v === 3 && record.k === COMPACT_PROOF_KIND) {
+      return true;
+    }
+    return record.kind === PROOF_KIND;
+  } catch {
+    return false;
+  }
+}
+
+export function needsProofRemint(ticket: TicketRecord): boolean {
+  if (!ticket.ticketQrPayload) {
+    return false;
+  }
+  const trimmed = ticket.ticketQrPayload.trim();
+  if (trimmed.length >= LEGACY_PROOF_QR_LENGTH_THRESHOLD) {
+    return true;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    const shell = parseProofShell(parsed);
+    return shell?.v === 2;
+  } catch {
+    return true;
+  }
 }
 
 export function canBuildTicketProof(ticket: TicketRecord): boolean {
@@ -132,36 +289,39 @@ export async function buildTicketProofPlaintext(ticket: TicketRecord): Promise<T
   return parsed.success ? parsed.data : null;
 }
 
-/** Gate-ready verification QR — ciphertext hides fan/event details until gatekeeper decrypts. */
-export async function buildTicketProofQr(ticket: TicketRecord): Promise<string | null> {
-  const plaintext = await buildTicketProofPlaintext(ticket);
-  if (!plaintext) {
-    return null;
-  }
-
+async function buildCompactProofShellString(plaintext: TicketProofPlaintext): Promise<string | null> {
   const shellBase = {
-    v: 2 as const,
-    kind: PROOF_KIND,
-    ticketId: plaintext.ticketId,
-    sessionId: plaintext.sessionId,
-    receiverAddress: plaintext.receiverAddress,
+    v: 3 as const,
+    k: COMPACT_PROOF_KIND,
+    i: plaintext.ticketId,
+    sid: plaintext.sessionId,
+    rcv: plaintext.receiverAddress,
   };
 
   const encrypted = await encryptJson({
     sessionId: plaintext.sessionId,
     receiverAddress: plaintext.receiverAddress,
     purpose: 'proof',
-    plaintext,
+    plaintext: compactCipherFromPlaintext(plaintext),
     aad: shellBase,
   });
 
-  const shell: EncryptedTicketProofShell = {
+  const shell: CompactTicketProofShell = {
     ...shellBase,
-    nonce: encrypted.nonce,
-    ciphertext: encrypted.ciphertext,
+    n: encrypted.nonce,
+    ct: encrypted.ciphertext,
   };
 
   return JSON.stringify(shell);
+}
+
+/** Gate-ready verification QR — compact v3 ciphertext for reliable camera scans. */
+export async function buildTicketProofQr(ticket: TicketRecord): Promise<string | null> {
+  const plaintext = await buildTicketProofPlaintext(ticket);
+  if (!plaintext) {
+    return null;
+  }
+  return buildCompactProofShellString(plaintext);
 }
 
 export function getProofPurchaseKey(proof: Pick<TicketProofPlaintext, 'receiptId' | 'txHash'>): string {
@@ -178,7 +338,35 @@ export async function verifyTicketProofPlaintext(proof: TicketProofPlaintext): P
   return expected === payloadHash;
 }
 
-/** Gatekeeper scan-to-verify entry point. */
+async function decryptProofShell(shell: ProofShell): Promise<TicketProofPlaintext | null> {
+  const decrypted = decryptJson<Record<string, unknown>>({
+    sessionId: shellSessionId(shell),
+    receiverAddress: shellReceiverAddress(shell),
+    purpose: 'proof',
+    nonce: shellNonce(shell),
+    ciphertext: shellCiphertext(shell),
+    aad: buildProofShellAad(shell),
+  });
+
+  if (!decrypted) {
+    return null;
+  }
+
+  if (shell.v === 3) {
+    const compact = compactTicketProofCipherSchema.safeParse(decrypted);
+    if (!compact.success) {
+      return null;
+    }
+    const proof = expandCompactCipherPlaintext(shell, compact.data);
+    const parsed = ticketProofPlaintextSchema.safeParse(proof);
+    return parsed.success ? parsed.data : null;
+  }
+
+  const proof = ticketProofPlaintextSchema.safeParse(decrypted);
+  return proof.success ? proof.data : null;
+}
+
+/** Gatekeeper scan-to-verify entry point. Accepts legacy v2 and compact v3 proof shells. */
 export async function parseAndVerifyTicketProof(
   raw: string,
   gatekeeperAddress: string,
@@ -202,8 +390,8 @@ export async function parseAndVerifyTicketProof(
       };
     }
 
-    const shell = encryptedTicketProofShellSchema.safeParse(parsed);
-    if (!shell.success) {
+    const shell = parseProofShell(parsed);
+    if (!shell) {
       const maybeKind = typeof parsed === 'object' && parsed && 'kind' in parsed
         ? String((parsed as { kind?: unknown }).kind ?? '')
         : '';
@@ -217,46 +405,33 @@ export async function parseAndVerifyTicketProof(
     }
 
     const normalizedGatekeeper = normalizeReceiverAddress(gatekeeperAddress);
-    const issuer = normalizeReceiverAddress(shell.data.receiverAddress);
+    const issuer = normalizeReceiverAddress(shellReceiverAddress(shell));
     if (issuer !== normalizedGatekeeper) {
       return {
         ok: false,
-        reason: `Wrong club wallet. Ticket issuer is ${shortAddress(shell.data.receiverAddress)}; this phone is ${shortAddress(gatekeeperAddress)}. Unlock the issuer wallet, then scan again.`,
+        reason: `Wrong club wallet. Ticket issuer is ${shortAddress(shellReceiverAddress(shell))}; this phone is ${shortAddress(gatekeeperAddress)}. Unlock the issuer wallet, then scan again.`,
       };
     }
 
-    const decrypted = decryptJson<Record<string, unknown>>({
-      sessionId: shell.data.sessionId,
-      receiverAddress: shell.data.receiverAddress,
-      purpose: 'proof',
-      nonce: shell.data.nonce,
-      ciphertext: shell.data.ciphertext,
-      aad: buildProofShellAad(shell.data),
-    });
-
-    if (!decrypted) {
+    const proof = await decryptProofShell(shell);
+    if (!proof) {
       return { ok: false, reason: 'Unable to decrypt ticket proof — QR may be damaged. Ask the fan to reopen the large verification QR.' };
     }
 
-    const proof = ticketProofPlaintextSchema.safeParse(decrypted);
-    if (!proof.success) {
-      return { ok: false, reason: 'Decrypted ticket proof is malformed.' };
-    }
-
-    if (proof.data.ticketId !== shell.data.ticketId || proof.data.sessionId !== shell.data.sessionId) {
+    if (proof.ticketId !== shellTicketId(shell) || proof.sessionId !== shellSessionId(shell)) {
       return { ok: false, reason: 'Ticket proof metadata mismatch.' };
     }
 
-    const validHash = await verifyTicketProofPlaintext(proof.data);
+    const validHash = await verifyTicketProofPlaintext(proof);
     if (!validHash) {
       return { ok: false, reason: 'Ticket proof integrity check failed.' };
     }
 
-    if (proof.data.endAt && new Date(proof.data.endAt).getTime() <= Date.now()) {
+    if (proof.endAt && new Date(proof.endAt).getTime() <= Date.now()) {
       return { ok: false, reason: 'This ticket has expired (event end time passed).' };
     }
 
-    return { ok: true, proof: proof.data };
+    return { ok: true, proof };
   } catch {
     return { ok: false, reason: 'Invalid ticket verification QR.' };
   }
